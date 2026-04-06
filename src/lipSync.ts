@@ -1,6 +1,6 @@
 export type MouthShape = 'closed' | 'A' | 'E' | 'I' | 'O' | 'U' | 'F' | 'L' | 'M';
 
-// Map each character to a viseme (mouth shape)
+// Map each English character to a viseme (mouth shape)
 const charToViseme: Record<string, MouthShape> = {
   a: 'A',
   b: 'M',
@@ -30,6 +30,22 @@ const charToViseme: Record<string, MouthShape> = {
   z: 'E',
 };
 
+// Chinese characters are CJK Unified Ideographs: U+4E00–U+9FFF
+function isChinese(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return code >= 0x4e00 && code <= 0x9fff;
+}
+
+// Map Chinese characters to visemes based on char code for varied mouth movement.
+// Each Chinese syllable typically has an open vowel sound, so we rotate through
+// speaking shapes to create natural-looking articulation.
+const chineseVisemes: MouthShape[] = ['A', 'O', 'E', 'I', 'U', 'A', 'L', 'E', 'O', 'M'];
+
+function getChineseViseme(char: string): MouthShape {
+  const code = char.charCodeAt(0);
+  return chineseVisemes[code % chineseVisemes.length];
+}
+
 interface VisemeFrame {
   shape: MouthShape;
   startFrame: number;
@@ -56,10 +72,15 @@ export function textToVisemes(
     if (currentFrame >= totalFrames) break;
 
     const isLetter = /[a-z]/.test(char);
-    const shape: MouthShape = isLetter ? (charToViseme[char] || 'A') : 'closed';
+    const isCJK = isChinese(char);
+    const shape: MouthShape = isLetter
+      ? (charToViseme[char] || 'A')
+      : isCJK
+        ? getChineseViseme(char)
+        : 'closed';
 
-    // Add a brief transition to closed between words
-    if (char === ' ' || /[.,!?;:]/.test(char)) {
+    // Add a brief transition to closed between words and punctuation (English + Chinese)
+    if (char === ' ' || /[.,!?;:，。！？；：、]/.test(char)) {
       visemes.push({
         shape: 'closed',
         startFrame: currentFrame,

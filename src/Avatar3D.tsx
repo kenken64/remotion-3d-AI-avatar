@@ -1,41 +1,249 @@
-import React, {useRef, useMemo} from 'react';
+import React, {useRef, useMemo, useState} from 'react';
 import {Canvas, useFrame} from '@react-three/fiber';
-import {Environment} from '@react-three/drei';
+import {Environment, Stars} from '@react-three/drei';
 import * as THREE from 'three';
 import type {MouthShape} from './lipSync';
 
+// ========== Space background with nebula and particles ==========
+// ========== Shooting star ==========
+function ShootingStar() {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const trailRef = useRef<THREE.Mesh>(null);
+  const stateRef = useRef({
+    active: false,
+    timer: Math.random() * 5 + 3, // first one in 3–8s
+    x: 0, y: 0, z: -10,
+    vx: 0, vy: 0,
+    life: 0,
+    maxLife: 0,
+  });
+
+  useFrame((_, delta) => {
+    const s = stateRef.current;
+
+    if (!s.active) {
+      s.timer -= delta;
+      if (s.timer <= 0) {
+        // Spawn a new shooting star at random position on upper edges
+        s.active = true;
+        s.x = (Math.random() - 0.3) * 14;
+        s.y = Math.random() * 4 + 3;
+        s.z = -8 - Math.random() * 15;
+        const angle = -0.4 - Math.random() * 0.8; // downward angle
+        const speed = 8 + Math.random() * 6;
+        s.vx = Math.cos(angle) * speed;
+        s.vy = Math.sin(angle) * speed;
+        s.life = 0;
+        s.maxLife = 0.6 + Math.random() * 0.5;
+      }
+    }
+
+    if (s.active) {
+      s.life += delta;
+      s.x += s.vx * delta;
+      s.y += s.vy * delta;
+
+      const progress = s.life / s.maxLife;
+      const fadeIn = Math.min(progress * 5, 1);
+      const fadeOut = Math.max(1 - (progress - 0.5) * 2, 0);
+      const opacity = fadeIn * fadeOut;
+      const trailLen = 0.8 + progress * 1.5;
+
+      if (meshRef.current) {
+        meshRef.current.position.set(s.x, s.y, s.z);
+        meshRef.current.visible = true;
+        (meshRef.current.material as THREE.MeshBasicMaterial).opacity = opacity;
+      }
+
+      if (trailRef.current) {
+        const trailAngle = Math.atan2(s.vy, s.vx);
+        trailRef.current.position.set(
+          s.x - Math.cos(trailAngle) * trailLen * 0.5,
+          s.y - Math.sin(trailAngle) * trailLen * 0.5,
+          s.z,
+        );
+        trailRef.current.rotation.z = trailAngle;
+        trailRef.current.scale.set(trailLen, 1, 1);
+        trailRef.current.visible = true;
+        (trailRef.current.material as THREE.MeshBasicMaterial).opacity = opacity * 0.5;
+      }
+
+      if (s.life >= s.maxLife) {
+        s.active = false;
+        s.timer = 3 + Math.random() * 6; // next one in 3–9s
+        if (meshRef.current) meshRef.current.visible = false;
+        if (trailRef.current) trailRef.current.visible = false;
+      }
+    }
+  });
+
+  return (
+    <>
+      {/* Star head */}
+      <mesh ref={meshRef} visible={false}>
+        <sphereGeometry args={[0.06, 8, 8]} />
+        <meshBasicMaterial color="#ffffff" transparent opacity={0} />
+      </mesh>
+      {/* Trail */}
+      <mesh ref={trailRef} visible={false}>
+        <planeGeometry args={[1, 0.04]} />
+        <meshBasicMaterial color="#aaccff" transparent opacity={0} side={THREE.DoubleSide} />
+      </mesh>
+    </>
+  );
+}
+
+function SpaceBackground() {
+  const nebulaRef = useRef<THREE.Group>(null);
+  const particlesRef = useRef<THREE.Points>(null);
+
+  // Slowly rotate the nebula and particles
+  useFrame((_, delta) => {
+    if (nebulaRef.current) {
+      nebulaRef.current.rotation.z += delta * 0.01;
+    }
+    if (particlesRef.current) {
+      particlesRef.current.rotation.y += delta * 0.005;
+      particlesRef.current.rotation.x += delta * 0.002;
+    }
+  });
+
+  // Floating dust particles
+  const particleGeo = useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    const count = 200;
+    const positions = new Float32Array(count * 3);
+    const sizes = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = (Math.random() - 0.5) * 20;
+      positions[i * 3 + 1] = (Math.random() - 0.5) * 20;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 15 - 5;
+      sizes[i] = Math.random() * 0.04 + 0.01;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+    return geo;
+  }, []);
+
+  return (
+    <>
+      {/* Deep space starfield */}
+      <Stars radius={80} depth={60} count={3000} factor={3} saturation={0.2} fade speed={0.5} />
+
+      {/* Shooting stars — multiple so they overlap naturally */}
+      <ShootingStar />
+      <ShootingStar />
+      <ShootingStar />
+
+      {/* Nebula glow clouds */}
+      <group ref={nebulaRef}>
+        {/* Purple nebula */}
+        <mesh position={[-4, 3, -15]}>
+          <sphereGeometry args={[4, 16, 16]} />
+          <meshBasicMaterial color="#2a0845" transparent opacity={0.12} />
+        </mesh>
+        <mesh position={[-3.5, 2.5, -14]}>
+          <sphereGeometry args={[3, 16, 16]} />
+          <meshBasicMaterial color="#4a1080" transparent opacity={0.08} />
+        </mesh>
+
+        {/* Blue nebula */}
+        <mesh position={[5, -2, -18]}>
+          <sphereGeometry args={[5, 16, 16]} />
+          <meshBasicMaterial color="#0a1545" transparent opacity={0.15} />
+        </mesh>
+        <mesh position={[4, -1, -16]}>
+          <sphereGeometry args={[3.5, 16, 16]} />
+          <meshBasicMaterial color="#1a3070" transparent opacity={0.08} />
+        </mesh>
+
+        {/* Warm accent nebula */}
+        <mesh position={[2, 4, -20]}>
+          <sphereGeometry args={[3, 16, 16]} />
+          <meshBasicMaterial color="#301520" transparent opacity={0.1} />
+        </mesh>
+
+        {/* Distant bright cluster */}
+        <mesh position={[-2, -3, -25]}>
+          <sphereGeometry args={[1.5, 12, 12]} />
+          <meshBasicMaterial color="#223366" transparent opacity={0.2} />
+        </mesh>
+      </group>
+
+      {/* Floating dust particles */}
+      <points ref={particlesRef} geometry={particleGeo}>
+        <pointsMaterial
+          size={0.03}
+          color="#6688cc"
+          transparent
+          opacity={0.4}
+          sizeAttenuation
+          depthWrite={false}
+        />
+      </points>
+    </>
+  );
+}
+
 // ========== Mouth shape for each viseme ==========
-function MouthMesh({shape}: {shape: MouthShape}) {
+function MouthMesh({shape, isSpeaking}: {shape: MouthShape; isSpeaking: boolean}) {
   const params = useMemo(() => {
+    // Idle smile when not speaking and mouth is closed
+    if (!isSpeaking && (shape === 'closed' || shape === 'M')) {
+      return {w: 0.18, h: 0.015, open: false, smile: true};
+    }
     switch (shape) {
       case 'A':
-        return {w: 0.22, h: 0.14, open: true};
+        return {w: 0.22, h: 0.14, open: true, smile: false};
       case 'E':
-        return {w: 0.2, h: 0.06, open: true};
+        return {w: 0.2, h: 0.06, open: true, smile: false};
       case 'I':
-        return {w: 0.12, h: 0.08, open: true};
+        return {w: 0.12, h: 0.08, open: true, smile: false};
       case 'O':
-        return {w: 0.14, h: 0.16, open: true};
+        return {w: 0.14, h: 0.16, open: true, smile: false};
       case 'U':
-        return {w: 0.1, h: 0.12, open: true};
+        return {w: 0.1, h: 0.12, open: true, smile: false};
       case 'F':
-        return {w: 0.18, h: 0.03, open: true};
+        return {w: 0.18, h: 0.03, open: true, smile: false};
       case 'L':
-        return {w: 0.16, h: 0.08, open: true};
+        return {w: 0.16, h: 0.08, open: true, smile: false};
       case 'M':
-        return {w: 0.18, h: 0.015, open: false};
+        return {w: 0.18, h: 0.015, open: false, smile: false};
       default:
-        return {w: 0.18, h: 0.015, open: false};
+        return {w: 0.18, h: 0.015, open: false, smile: false};
     }
-  }, [shape]);
+  }, [shape, isSpeaking]);
 
   return (
     <group position={[0, -0.35, 0.83]}>
-      {/* Lips line */}
-      <mesh position={[0, 0.005, 0.005]}>
-        <planeGeometry args={[params.w + 0.04, 0.02]} />
-        <meshStandardMaterial color="#c1665a" roughness={0.4} side={THREE.DoubleSide} />
-      </mesh>
+      {/* Lips / smile curve */}
+      {params.smile ? (
+        <>
+          {/* Smile - curved lip line */}
+          <mesh position={[0, 0.005, 0.005]}>
+            <planeGeometry args={[0.22, 0.02]} />
+            <meshStandardMaterial color="#c1665a" roughness={0.4} side={THREE.DoubleSide} />
+          </mesh>
+          {/* Left smile corner - angled up */}
+          <mesh position={[-0.1, 0.02, 0.005]} rotation={[0, 0, 0.4]}>
+            <planeGeometry args={[0.05, 0.015]} />
+            <meshStandardMaterial color="#c1665a" roughness={0.4} side={THREE.DoubleSide} />
+          </mesh>
+          {/* Right smile corner - angled up */}
+          <mesh position={[0.1, 0.02, 0.005]} rotation={[0, 0, -0.4]}>
+            <planeGeometry args={[0.05, 0.015]} />
+            <meshStandardMaterial color="#c1665a" roughness={0.4} side={THREE.DoubleSide} />
+          </mesh>
+        </>
+      ) : (
+        <>
+          {/* Normal lips line */}
+          <mesh position={[0, 0.005, 0.005]}>
+            <planeGeometry args={[params.w + 0.04, 0.02]} />
+            <meshStandardMaterial color="#c1665a" roughness={0.4} side={THREE.DoubleSide} />
+          </mesh>
+        </>
+      )}
       {/* Mouth interior */}
       {params.open && (
         <mesh position={[0, -0.01, -0.005]}>
@@ -54,10 +262,29 @@ function MouthMesh({shape}: {shape: MouthShape}) {
   );
 }
 
+// ========== Eyelid for blinking ==========
+// Rounded eyelid that slides down from just below the eyebrow to cover the eye.
+// Uses a sphere scaled flat so it blends smoothly with the face curvature.
+// blinkAmount: 0 = open (lid tucked under brow), 1 = closed (lid covers eye)
+function Eyelid({side, blinkAmount, skinMat}: {side: 'left' | 'right'; blinkAmount: number; skinMat: THREE.Material}) {
+  const x = side === 'left' ? -0.3 : 0.3;
+  // Lid slides from hidden above eye (y=0.22) to eye center (y=0.1)
+  const lidY = 0.22 - blinkAmount * 0.12;
+  return (
+    <mesh material={skinMat} position={[x, lidY, 0.76]} scale={[1.1, 0.5, 0.6]}>
+      <sphereGeometry args={[0.14, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
+    </mesh>
+  );
+}
+
 // ========== Head component ==========
-function Head({mouthShape, breatheY}: {mouthShape: MouthShape; breatheY: number}) {
+function Head({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; breatheY: number; isSpeaking: boolean}) {
   const groupRef = useRef<THREE.Group>(null);
   const idleRef = useRef(0);
+  const [blinkAmount, setBlinkAmount] = useState(0); // 0 = open, 1 = closed
+  const nextBlinkRef = useRef(Math.random() * 3 + 1.5);
+  const blinkPhaseRef = useRef<'idle' | 'closing' | 'opening'>('idle');
+  const blinkTimerRef = useRef(0);
 
   useFrame((_, delta) => {
     if (!groupRef.current) return;
@@ -65,6 +292,30 @@ function Head({mouthShape, breatheY}: {mouthShape: MouthShape; breatheY: number}
     groupRef.current.rotation.y = Math.sin(idleRef.current * 0.5) * 0.05;
     groupRef.current.rotation.x = Math.sin(idleRef.current * 0.3) * 0.02;
     groupRef.current.position.y = breatheY * 0.01;
+
+    // Random blink logic
+    blinkTimerRef.current += delta;
+    if (blinkPhaseRef.current === 'idle') {
+      if (blinkTimerRef.current >= nextBlinkRef.current) {
+        blinkPhaseRef.current = 'closing';
+        blinkTimerRef.current = 0;
+      }
+    } else if (blinkPhaseRef.current === 'closing') {
+      const t = Math.min(blinkTimerRef.current / 0.07, 1);
+      setBlinkAmount(t);
+      if (t >= 1) {
+        blinkPhaseRef.current = 'opening';
+        blinkTimerRef.current = 0;
+      }
+    } else if (blinkPhaseRef.current === 'opening') {
+      const t = Math.min(blinkTimerRef.current / 0.1, 1);
+      setBlinkAmount(1 - t);
+      if (t >= 1) {
+        blinkPhaseRef.current = 'idle';
+        blinkTimerRef.current = 0;
+        nextBlinkRef.current = Math.random() * 4 + 1.5; // 1.5–5.5s between blinks
+      }
+    }
   });
 
   const skinMat = useMemo(
@@ -81,20 +332,100 @@ function Head({mouthShape, breatheY}: {mouthShape: MouthShape; breatheY: number}
 
   const hairMat = useMemo(
     () =>
-      new THREE.MeshStandardMaterial({
-        color: '#1a1a2e',
-        roughness: 0.7,
-        metalness: 0.1,
+      new THREE.MeshPhysicalMaterial({
+        color: '#e84393',
+        roughness: 0.35,
+        metalness: 0.05,
+        clearcoat: 0.4,
+        clearcoatRoughness: 0.3,
+        sheen: 1.0,
+        sheenColor: new THREE.Color('#ff6eb4'),
+        sheenRoughness: 0.3,
+      }),
+    [],
+  );
+
+  const hairHighlightMat = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: '#ff8cc8',
+        roughness: 0.3,
+        metalness: 0.05,
+        clearcoat: 0.5,
+        clearcoatRoughness: 0.2,
+        sheen: 1.0,
+        sheenColor: new THREE.Color('#ffb6d9'),
+        sheenRoughness: 0.2,
+      }),
+    [],
+  );
+
+  const hairDarkMat = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: '#c0306b',
+        roughness: 0.4,
+        metalness: 0.05,
+        clearcoat: 0.3,
+        clearcoatRoughness: 0.4,
+        sheen: 0.8,
+        sheenColor: new THREE.Color('#e84393'),
+        sheenRoughness: 0.3,
       }),
     [],
   );
 
   const suitMat = useMemo(
     () =>
-      new THREE.MeshStandardMaterial({
+      new THREE.MeshPhysicalMaterial({
         color: '#1a1a28',
-        roughness: 0.6,
-        metalness: 0.15,
+        roughness: 0.55,
+        metalness: 0.1,
+        clearcoat: 0.15,
+        clearcoatRoughness: 0.6,
+      }),
+    [],
+  );
+
+  const shirtMat = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: '#f5f5fa',
+        roughness: 0.4,
+        metalness: 0.0,
+        clearcoat: 0.05,
+      }),
+    [],
+  );
+
+  const tieMat = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: '#0a0a18',
+        roughness: 0.35,
+        metalness: 0.05,
+        clearcoat: 0.3,
+        clearcoatRoughness: 0.4,
+      }),
+    [],
+  );
+
+  const buttonMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#222233',
+        roughness: 0.2,
+        metalness: 0.6,
+      }),
+    [],
+  );
+
+  const pocketMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#e8e8f0',
+        roughness: 0.3,
+        metalness: 0.0,
       }),
     [],
   );
@@ -149,43 +480,104 @@ function Head({mouthShape, breatheY}: {mouthShape: MouthShape; breatheY: number}
       </mesh>
 
       {/* ===== BODY / SUIT ===== */}
-      <mesh material={suitMat} position={[0, -1.6, 0]} scale={[1, 1, 0.9]}>
-        <boxGeometry args={[2.2, 0.9, 0.9]} />
-      </mesh>
-      <mesh material={suitMat} position={[0, -2.3, 0]}>
-        <boxGeometry args={[1.8, 1.0, 0.8]} />
+
+      {/* --- Base torso --- */}
+      <mesh material={suitMat} position={[0, -1.75, 0]} scale={[1, 1, 0.8]}>
+        <cylinderGeometry args={[0.72, 0.65, 1.3, 32]} />
       </mesh>
 
-      {/* Shirt V */}
-      <mesh position={[0, -1.2, 0.39]}>
-        <planeGeometry args={[0.35, 0.45]} />
-        <meshStandardMaterial color="#f0f0f5" roughness={0.5} side={THREE.DoubleSide} />
+      {/* --- Chest --- */}
+      <mesh material={suitMat} position={[0, -1.25, 0.02]} scale={[0.95, 0.75, 0.82]}>
+        <sphereGeometry args={[0.78, 32, 20]} />
       </mesh>
 
-      {/* Tie */}
-      <mesh position={[0, -1.55, 0.42]}>
-        <boxGeometry args={[0.1, 0.7, 0.02]} />
-        <meshStandardMaterial color="#111122" roughness={0.5} />
+      {/* --- Shoulders (natural slope) --- */}
+      <mesh material={suitMat} position={[-0.7, -1.15, -0.02]} scale={[0.8, 0.45, 0.6]}>
+        <sphereGeometry args={[0.48, 24, 16]} />
       </mesh>
-      <mesh position={[0, -1.18, 0.42]}>
-        <sphereGeometry args={[0.05, 8, 8]} />
-        <meshStandardMaterial color="#111122" roughness={0.5} />
+      <mesh material={suitMat} position={[0.7, -1.15, -0.02]} scale={[0.8, 0.45, 0.6]}>
+        <sphereGeometry args={[0.48, 24, 16]} />
       </mesh>
 
-      {/* Lapels */}
-      <mesh material={suitMat} position={[-0.22, -1.4, 0.41]} rotation={[0, 0, 0.25]}>
-        <boxGeometry args={[0.18, 0.6, 0.03]} />
+      {/* --- Upper arms --- */}
+      <mesh material={suitMat} position={[-0.92, -1.45, 0]} rotation={[0, 0, 0.15]} scale={[1, 1, 0.8]}>
+        <capsuleGeometry args={[0.17, 0.45, 8, 16]} />
       </mesh>
-      <mesh material={suitMat} position={[0.22, -1.4, 0.41]} rotation={[0, 0, -0.25]}>
-        <boxGeometry args={[0.18, 0.6, 0.03]} />
+      <mesh material={suitMat} position={[0.92, -1.45, 0]} rotation={[0, 0, -0.15]} scale={[1, 1, 0.8]}>
+        <capsuleGeometry args={[0.17, 0.45, 8, 16]} />
       </mesh>
 
-      {/* Crossed arms */}
-      <mesh material={suitMat} position={[-0.5, -1.8, 0.3]} rotation={[0, 0, 0.6]}>
-        <boxGeometry args={[0.9, 0.3, 0.35]} />
+      {/* --- Shirt front panel (visible under jacket) --- */}
+      <mesh material={shirtMat} position={[0, -1.3, 0.48]} scale={[1, 1, 1]}>
+        <planeGeometry args={[0.32, 0.65]} />
       </mesh>
-      <mesh material={suitMat} position={[0.5, -1.8, 0.35]} rotation={[0, 0, -0.6]}>
-        <boxGeometry args={[0.9, 0.3, 0.35]} />
+
+      {/* --- Shirt collar left --- */}
+      <mesh material={shirtMat} position={[-0.12, -1.0, 0.46]} rotation={[0.1, 0.2, 0.45]} scale={[1, 0.6, 0.5]}>
+        <capsuleGeometry args={[0.05, 0.12, 4, 8]} />
+      </mesh>
+      {/* --- Shirt collar right --- */}
+      <mesh material={shirtMat} position={[0.12, -1.0, 0.46]} rotation={[0.1, -0.2, -0.45]} scale={[1, 0.6, 0.5]}>
+        <capsuleGeometry args={[0.05, 0.12, 4, 8]} />
+      </mesh>
+
+      {/* --- Bow tie --- */}
+      {/* Left wing */}
+      <mesh material={tieMat} position={[-0.065, -1.05, 0.5]} rotation={[0, 0, 0.3]} scale={[1.2, 0.6, 0.5]}>
+        <sphereGeometry args={[0.05, 12, 8]} />
+      </mesh>
+      {/* Right wing */}
+      <mesh material={tieMat} position={[0.065, -1.05, 0.5]} rotation={[0, 0, -0.3]} scale={[1.2, 0.6, 0.5]}>
+        <sphereGeometry args={[0.05, 12, 8]} />
+      </mesh>
+      {/* Center knot */}
+      <mesh material={tieMat} position={[0, -1.05, 0.52]}>
+        <sphereGeometry args={[0.025, 8, 8]} />
+      </mesh>
+
+      {/* --- Suit jacket lapels (V-shape) --- */}
+      {/* Left lapel */}
+      <mesh material={suitMat} position={[-0.2, -1.3, 0.5]} rotation={[0.05, 0.1, 0.3]} scale={[0.6, 1, 0.2]}>
+        <capsuleGeometry args={[0.08, 0.4, 6, 12]} />
+      </mesh>
+      {/* Right lapel */}
+      <mesh material={suitMat} position={[0.2, -1.3, 0.5]} rotation={[0.05, -0.1, -0.3]} scale={[0.6, 1, 0.2]}>
+        <capsuleGeometry args={[0.08, 0.4, 6, 12]} />
+      </mesh>
+
+      {/* --- Suit buttons --- */}
+      <mesh material={buttonMat} position={[0, -1.35, 0.53]}>
+        <sphereGeometry args={[0.022, 12, 12]} />
+      </mesh>
+      <mesh material={buttonMat} position={[0, -1.5, 0.51]}>
+        <sphereGeometry args={[0.022, 12, 12]} />
+      </mesh>
+
+      {/* --- Pocket square (left breast) --- */}
+      <mesh material={pocketMat} position={[-0.28, -1.25, 0.52]} rotation={[0, 0, 0.1]} scale={[1, 1, 0.3]}>
+        <boxGeometry args={[0.07, 0.04, 0.04]} />
+      </mesh>
+      {/* Pocket square fabric peeking out */}
+      <mesh material={pocketMat} position={[-0.28, -1.22, 0.53]} rotation={[0.2, 0, 0.15]} scale={[0.8, 0.6, 0.3]}>
+        <sphereGeometry args={[0.03, 8, 6]} />
+      </mesh>
+
+      {/* --- Crossed arms --- */}
+      {/* Left forearm (crosses to right) */}
+      <mesh material={suitMat} position={[-0.3, -1.72, 0.38]} rotation={[0.15, 0.3, 0.5]} scale={[1, 1, 0.85]}>
+        <capsuleGeometry args={[0.15, 0.55, 8, 16]} />
+      </mesh>
+      {/* Right forearm (crosses to left) */}
+      <mesh material={suitMat} position={[0.3, -1.72, 0.4]} rotation={[0.15, -0.3, -0.5]} scale={[1, 1, 0.85]}>
+        <capsuleGeometry args={[0.15, 0.55, 8, 16]} />
+      </mesh>
+      {/* Left hand */}
+      <mesh material={skinMat} position={[0.55, -1.6, 0.42]} scale={[0.7, 0.5, 0.5]}>
+        <sphereGeometry args={[0.1, 12, 8]} />
+      </mesh>
+      {/* Right hand */}
+      <mesh material={skinMat} position={[-0.55, -1.6, 0.4]} scale={[0.7, 0.5, 0.5]}>
+        <sphereGeometry args={[0.1, 12, 8]} />
       </mesh>
 
       {/* ===== EYES ===== */}
@@ -229,13 +621,18 @@ function Head({mouthShape, breatheY}: {mouthShape: MouthShape; breatheY: number}
         </mesh>
       </group>
 
+      {/* ===== EYELIDS (blink) ===== */}
+      <Eyelid side="left" blinkAmount={blinkAmount} skinMat={skinMat} />
+      <Eyelid side="right" blinkAmount={blinkAmount} skinMat={skinMat} />
+
       {/* ===== EYEBROWS ===== */}
-      <mesh position={[-0.3, 0.28, 0.74]} rotation={[0, 0, 0.1]}>
-        <boxGeometry args={[0.22, 0.04, 0.06]} />
+      {/* Rounded eyebrows that sit above the eyelids, z pushed forward */}
+      <mesh position={[-0.3, 0.28, 0.79]} rotation={[0.15, 0, 0.1]} scale={[1, 0.35, 0.5]}>
+        <sphereGeometry args={[0.13, 16, 8]} />
         <meshStandardMaterial color="#1a1a2e" roughness={0.8} />
       </mesh>
-      <mesh position={[0.3, 0.28, 0.74]} rotation={[0, 0, -0.1]}>
-        <boxGeometry args={[0.22, 0.04, 0.06]} />
+      <mesh position={[0.3, 0.28, 0.79]} rotation={[0.15, 0, -0.1]} scale={[1, 0.35, 0.5]}>
+        <sphereGeometry args={[0.13, 16, 8]} />
         <meshStandardMaterial color="#1a1a2e" roughness={0.8} />
       </mesh>
 
@@ -274,34 +671,67 @@ function Head({mouthShape, breatheY}: {mouthShape: MouthShape; breatheY: number}
         <boxGeometry args={[0.4, 0.015, 0.015]} />
       </mesh>
 
-      {/* ===== HAIR ===== */}
-      {/* Main volume */}
-      <mesh material={hairMat} position={[0, 0.55, 0]} scale={[1.05, 0.6, 1.0]}>
-        <sphereGeometry args={[0.82, 32, 32]} />
+      {/* ===== HAIR (stylish pink) ===== */}
+
+      {/* Base volume - dark pink underlay */}
+      <mesh material={hairDarkMat} position={[0, 0.5, -0.05]} scale={[1.08, 0.6, 1.0]}>
+        <sphereGeometry args={[0.84, 32, 32]} />
       </mesh>
-      {/* Top sweep */}
-      <mesh material={hairMat} position={[0.1, 0.75, 0.15]} scale={[1.1, 0.45, 0.9]}>
-        <sphereGeometry args={[0.6, 32, 32]} />
+
+      {/* Main top volume - swept dramatically to the right */}
+      <mesh material={hairMat} position={[0.12, 0.72, 0.1]} scale={[1.15, 0.5, 0.95]}>
+        <sphereGeometry args={[0.65, 32, 32]} />
       </mesh>
-      {/* Front sweep */}
-      <mesh material={hairMat} position={[0.15, 0.6, 0.55]} scale={[1.2, 0.35, 0.6]}>
-        <sphereGeometry args={[0.4, 16, 16]} />
+
+      {/* High swept spike - dramatic upward sweep */}
+      <mesh material={hairHighlightMat} position={[0.25, 0.9, 0.05]} scale={[0.6, 0.55, 0.5]} rotation={[0, 0, -0.3]}>
+        <sphereGeometry args={[0.4, 24, 16]} />
       </mesh>
-      {/* Side left */}
-      <mesh material={hairMat} position={[-0.75, 0.2, 0.15]} scale={[0.5, 1.2, 0.8]}>
-        <sphereGeometry args={[0.2, 16, 16]} />
+
+      {/* Front fringe - sweeping across forehead */}
+      <mesh material={hairMat} position={[0.2, 0.6, 0.58]} scale={[1.3, 0.32, 0.55]}>
+        <sphereGeometry args={[0.38, 24, 16]} />
       </mesh>
-      {/* Side right */}
-      <mesh material={hairMat} position={[0.75, 0.2, 0.15]} scale={[0.5, 1.2, 0.8]}>
-        <sphereGeometry args={[0.2, 16, 16]} />
+      {/* Fringe highlight strand */}
+      <mesh material={hairHighlightMat} position={[0.35, 0.58, 0.55]} scale={[0.6, 0.25, 0.4]} rotation={[0, 0, -0.2]}>
+        <sphereGeometry args={[0.3, 16, 12]} />
       </mesh>
-      {/* Back */}
-      <mesh material={hairMat} position={[0, 0.15, -0.5]} scale={[1.1, 0.9, 0.5]}>
-        <sphereGeometry args={[0.7, 16, 16]} />
+
+      {/* Left side - textured layers */}
+      <mesh material={hairDarkMat} position={[-0.72, 0.3, 0.1]} scale={[0.45, 0.9, 0.7]}>
+        <sphereGeometry args={[0.25, 16, 16]} />
+      </mesh>
+      <mesh material={hairMat} position={[-0.65, 0.15, 0.2]} scale={[0.4, 0.7, 0.6]}>
+        <sphereGeometry args={[0.22, 16, 12]} />
+      </mesh>
+
+      {/* Right side - longer stylish layers */}
+      <mesh material={hairMat} position={[0.72, 0.35, 0.1]} scale={[0.5, 1.0, 0.7]}>
+        <sphereGeometry args={[0.25, 16, 16]} />
+      </mesh>
+      <mesh material={hairHighlightMat} position={[0.68, 0.15, 0.18]} scale={[0.4, 0.8, 0.55]}>
+        <sphereGeometry args={[0.22, 16, 12]} />
+      </mesh>
+
+      {/* Back volume */}
+      <mesh material={hairDarkMat} position={[0, 0.2, -0.48]} scale={[1.12, 0.85, 0.5]}>
+        <sphereGeometry args={[0.7, 24, 16]} />
+      </mesh>
+      {/* Back nape - tapered */}
+      <mesh material={hairMat} position={[0, -0.05, -0.42]} scale={[0.8, 0.5, 0.4]}>
+        <sphereGeometry args={[0.45, 16, 12]} />
+      </mesh>
+
+      {/* Extra spiky wisps on top for edginess */}
+      <mesh material={hairHighlightMat} position={[-0.15, 0.85, 0.2]} scale={[0.35, 0.4, 0.35]} rotation={[0.1, 0, 0.4]}>
+        <sphereGeometry args={[0.3, 12, 10]} />
+      </mesh>
+      <mesh material={hairMat} position={[0.4, 0.82, -0.05]} scale={[0.3, 0.35, 0.4]} rotation={[0, 0, -0.5]}>
+        <sphereGeometry args={[0.28, 12, 10]} />
       </mesh>
 
       {/* ===== MOUTH ===== */}
-      <MouthMesh shape={mouthShape} />
+      <MouthMesh shape={mouthShape} isSpeaking={isSpeaking} />
     </group>
   );
 }
@@ -310,27 +740,34 @@ function Head({mouthShape, breatheY}: {mouthShape: MouthShape; breatheY: number}
 interface Avatar3DProps {
   mouthShape: MouthShape;
   breatheY: number;
+  isSpeaking?: boolean;
 }
 
-export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY}) => {
+export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeaking = false}) => {
   return (
     <Canvas
       camera={{position: [0, -0.3, 4.5], fov: 35}}
       style={{width: '100%', height: '100%'}}
       gl={{antialias: true, alpha: true}}
     >
-      <color attach="background" args={['#0f1828']} />
+      <color attach="background" args={['#030510']} />
 
-      {/* Lighting */}
-      <ambientLight intensity={0.4} />
-      <directionalLight position={[3, 4, 5]} intensity={1.0} color="#fff5ee" />
-      <directionalLight position={[-2, 2, 3]} intensity={0.4} color="#8899cc" />
-      <pointLight position={[0, -1, 4]} intensity={0.3} color="#aabbff" />
-      <directionalLight position={[0, 1, -3]} intensity={0.6} color="#4466aa" />
+      {/* Space background */}
+      <SpaceBackground />
 
-      <Environment preset="studio" />
+      {/* Lighting — slightly cooler for space feel */}
+      <ambientLight intensity={0.35} color="#aabbdd" />
+      <directionalLight position={[3, 4, 5]} intensity={1.1} color="#eef0ff" />
+      <directionalLight position={[-2, 2, 3]} intensity={0.35} color="#7788bb" />
+      <pointLight position={[0, -1, 4]} intensity={0.25} color="#8899dd" />
+      {/* Rim light — blue edge glow */}
+      <directionalLight position={[0, 1, -3]} intensity={0.7} color="#3355aa" />
+      {/* Subtle bottom fill */}
+      <pointLight position={[0, -3, 2]} intensity={0.15} color="#443366" />
 
-      <Head mouthShape={mouthShape} breatheY={breatheY} />
+      <Environment preset="night" />
+
+      <Head mouthShape={mouthShape} breatheY={breatheY} isSpeaking={isSpeaking} />
     </Canvas>
   );
 };

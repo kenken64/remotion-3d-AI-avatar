@@ -1,13 +1,13 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import OpenAI from 'openai';
+import OpenAI, {toFile} from 'openai';
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({limit: '10mb'}));
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -59,6 +59,32 @@ app.post('/api/tts', async (req, res) => {
   } catch (err: any) {
     console.error('TTS error:', err.message);
     res.status(500).json({error: 'Failed to generate speech'});
+  }
+});
+
+// Speech-to-text (Whisper)
+app.post('/api/transcribe', async (req, res) => {
+  try {
+    const {audio} = req.body; // base64-encoded webm audio
+    if (!audio) {
+      res.status(400).json({error: 'No audio data provided'});
+      return;
+    }
+
+    const buffer = Buffer.from(audio, 'base64');
+    const file = await toFile(buffer, 'recording.webm', {type: 'audio/webm'});
+
+    // Try English first, then Chinese if result is low confidence
+    const transcription = await openai.audio.transcriptions.create({
+      model: 'whisper-1',
+      file,
+      prompt: 'This audio is in English or Chinese (Mandarin).',
+    });
+
+    res.json({text: transcription.text});
+  } catch (err: any) {
+    console.error('Transcription error:', err.message);
+    res.status(500).json({error: 'Failed to transcribe audio'});
   }
 });
 

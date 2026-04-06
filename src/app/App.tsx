@@ -1,7 +1,7 @@
 import React, {useState, useRef, useEffect, useCallback} from 'react';
 import {Avatar3D} from '../Avatar3D';
 import {useAudioLipSync} from './useAudioLipSync';
-import {sendChatMessage, fetchSpeechAudio, ChatMsg} from './api';
+import {sendChatMessage, fetchSpeechAudio, transcribeAudio, ChatMsg} from './api';
 import type {MouthShape} from '../lipSync';
 
 interface ChatMessage {
@@ -9,18 +9,24 @@ interface ChatMessage {
   text: string;
   sender: 'user' | 'avatar';
   timestamp: Date;
+  audioUrl?: string; // object URL for TTS audio replay
 }
 
 export const App: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isThinking, setIsThinking] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [breatheY, setBreatheY] = useState(0);
+  const [playingMsgId, setPlayingMsgId] = useState<number | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const messageIdRef = useRef(0);
   const conversationRef = useRef<ChatMsg[]>([]);
   const breatheRef = useRef(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   const {mouthShape, isSpeaking, spokenText, currentSpeech, speak} =
     useAudioLipSync();
@@ -57,41 +63,32 @@ export const App: React.FC = () => {
     chatEndRef.current?.scrollIntoView({behavior: 'smooth'});
   }, [messages]);
 
-  const handleSend = useCallback(async () => {
-    const trimmed = inputText.trim();
-    if (!trimmed || isThinking || isSpeaking) return;
+  const sendMessage = useCallback(async (text: string) => {
+    if (!text.trim() || isThinking || isSpeaking) return;
 
-    // Add user message to chat
     setMessages((prev) => [
       ...prev,
       {
         id: ++messageIdRef.current,
-        text: trimmed,
+        text,
         sender: 'user',
         timestamp: new Date(),
       },
     ]);
-    setInputText('');
 
-    // Add to conversation history
-    conversationRef.current.push({role: 'user', content: trimmed});
-
+    conversationRef.current.push({role: 'user', content: text});
     setIsThinking(true);
 
     try {
-      // Get AI response
       const reply = await sendChatMessage(conversationRef.current);
       conversationRef.current.push({role: 'assistant', content: reply});
 
-      // Get TTS audio
       const audioBlob = await fetchSpeechAudio(reply);
-
+      const audioUrl = URL.createObjectURL(audioBlob);
       setIsThinking(false);
 
-      // Play audio + lip sync
       await speak(reply, audioBlob);
 
-      // Add avatar message after speaking
       setMessages((prev) => [
         ...prev,
         {
@@ -99,6 +96,7 @@ export const App: React.FC = () => {
           text: reply,
           sender: 'avatar',
           timestamp: new Date(),
+          audioUrl,
         },
       ]);
     } catch (err) {
@@ -114,7 +112,14 @@ export const App: React.FC = () => {
         },
       ]);
     }
-  }, [inputText, isThinking, isSpeaking, speak]);
+  }, [isThinking, isSpeaking, speak]);
+
+  const handleSend = useCallback(() => {
+    const trimmed = inputText.trim();
+    if (!trimmed) return;
+    setInputText('');
+    sendMessage(trimmed);
+  }, [inputText, sendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -123,6 +128,66 @@ export const App: React.FC = () => {
     }
   };
 
+  // Toggle mic recording: click to start, click again to stop
+  const toggleRecording = useCallback(async () => {
+    if (isRecording) {
+      // Stop recording
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current = null;
+        setIsRecording(false);
+      }
+      return;
+    }
+
+    if (isThinking || isSpeaking || isTranscribing) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      const mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const audioBlob = new Blob(audioChunksRef.current, {type: 'audio/webm'});
+
+        if (audioBlob.size < 1000) return;
+
+        setIsTranscribing(true);
+        try {
+          const text = await transcribeAudio(audioBlob);
+          setIsTranscribing(false);
+          if (text.trim()) {
+            sendMessage(text.trim());
+          }
+        } catch (err) {
+          console.error('Transcription error:', err);
+          setIsTranscribing(false);
+        }
+      };
+
+      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error('Mic access denied:', err);
+    }
+  }, [isRecording, isThinking, isSpeaking, isTranscribing, sendMessage]);
+
+  // Replay avatar audio
+  const replayAudio = useCallback((msgId: number, audioUrl: string) => {
+    if (playingMsgId === msgId) return; // already playing this one
+    const audio = new Audio(audioUrl);
+    setPlayingMsgId(msgId);
+    audio.play();
+    audio.onended = () => setPlayingMsgId(null);
+    audio.onerror = () => setPlayingMsgId(null);
+  }, [playingMsgId]);
+
   const activeMouth = isSpeaking ? mouthShape : idleMouth;
 
   return (
@@ -130,7 +195,26 @@ export const App: React.FC = () => {
       {/* Left: 3D Avatar */}
       <div style={styles.avatarPanel}>
         <div style={styles.avatarScene}>
-          <Avatar3D mouthShape={activeMouth} breatheY={breatheY} />
+          <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} />
+
+          {/* Recording indicator */}
+          {isRecording && (
+            <div style={styles.recordingOverlay}>
+              <div style={styles.recordingBubble}>
+                <div style={styles.recordingPulse} />
+                <span style={styles.recordingText}>Listening...</span>
+              </div>
+            </div>
+          )}
+
+          {/* Transcribing indicator */}
+          {isTranscribing && (
+            <div style={styles.thinkingOverlay}>
+              <div style={{...styles.thinkingBubble, borderColor: 'rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.15)'}}>
+                <span style={{...styles.thinkingText, color: '#fbbf24'}}>Transcribing...</span>
+              </div>
+            </div>
+          )}
 
           {/* Thinking indicator */}
           {isThinking && (
@@ -176,16 +260,20 @@ export const App: React.FC = () => {
           <div
             style={{
               ...styles.headerDot,
-              background: isSpeaking ? '#f59e0b' : isThinking ? '#8b5cf6' : '#4ade80',
+              background: isRecording ? '#ef4444' : isTranscribing ? '#f59e0b' : isSpeaking ? '#f59e0b' : isThinking ? '#8b5cf6' : '#4ade80',
             }}
           />
           <h2 style={styles.headerTitle}>AI Avatar</h2>
           <span style={styles.headerSubtitle}>
-            {isSpeaking
-              ? 'Speaking...'
-              : isThinking
-                ? 'Thinking...'
-                : 'Chat with the AI avatar'}
+            {isRecording
+              ? 'Recording... click mic to stop'
+              : isTranscribing
+                ? 'Transcribing...'
+                : isSpeaking
+                  ? 'Speaking...'
+                  : isThinking
+                    ? 'Thinking...'
+                    : 'Chat or hold mic to talk'}
           </span>
         </div>
 
@@ -222,12 +310,34 @@ export const App: React.FC = () => {
                   <span style={styles.userMsgLabel}>You</span>
                 )}
                 <p style={styles.messageText}>{msg.text}</p>
-                <span style={styles.timestamp}>
-                  {msg.timestamp.toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </span>
+                <div style={styles.messageFooter}>
+                  {msg.sender === 'avatar' && msg.audioUrl && (
+                    <button
+                      onClick={() => replayAudio(msg.id, msg.audioUrl!)}
+                      style={{
+                        ...styles.replayButton,
+                        ...(playingMsgId === msg.id ? styles.replayButtonPlaying : {}),
+                      }}
+                    >
+                      {playingMsgId === msg.id ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                          <rect x="6" y="4" width="4" height="16" rx="1" />
+                          <rect x="14" y="4" width="4" height="16" rx="1" />
+                        </svg>
+                      ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                          <polygon points="5 3 19 12 5 21 5 3" />
+                        </svg>
+                      )}
+                    </button>
+                  )}
+                  <span style={styles.timestamp}>
+                    {msg.timestamp.toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                </div>
               </div>
             </div>
           ))}
@@ -264,6 +374,42 @@ export const App: React.FC = () => {
               rows={1}
               disabled={isThinking || isSpeaking}
             />
+            {/* Mic button — click to start, click again to stop */}
+            <button
+              onClick={toggleRecording}
+              disabled={!isRecording && (isThinking || isSpeaking || isTranscribing)}
+              style={{
+                ...styles.micButton,
+                ...(isRecording
+                  ? styles.micButtonRecording
+                  : isThinking || isSpeaking || isTranscribing
+                    ? styles.micButtonDisabled
+                    : styles.micButtonIdle),
+              }}
+            >
+              {isRecording ? (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="6" width="12" height="12" rx="2" />
+                </svg>
+              ) : (
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+              )}
+            </button>
+            {/* Send button */}
             <button
               onClick={handleSend}
               disabled={!inputText.trim() || isThinking || isSpeaking}
@@ -308,6 +454,10 @@ export const App: React.FC = () => {
         @keyframes bounce {
           0%, 60%, 100% { transform: translateY(0); }
           30% { transform: translateY(-4px); }
+        }
+        @keyframes recording-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+          50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
         }
       `}</style>
     </div>
@@ -523,12 +673,35 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.5,
     color: '#e8e8e8',
   },
+  messageFooter: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 4,
+  },
+  replayButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    border: 'none',
+    background: 'rgba(255,255,255,0.1)',
+    color: '#8899bb',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'all 0.2s',
+    padding: 0,
+    flexShrink: 0,
+  },
+  replayButtonPlaying: {
+    background: 'rgba(83,127,231,0.3)',
+    color: '#537fe7',
+  },
   timestamp: {
     fontSize: 10,
     color: 'rgba(255,255,255,0.3)',
-    marginTop: 4,
-    display: 'block',
-    textAlign: 'right',
   },
   typingIndicator: {
     display: 'flex',
@@ -587,5 +760,61 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#2a2a3a',
     color: '#555',
     cursor: 'default',
+  },
+  micButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    border: 'none',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'all 0.2s',
+    flexShrink: 0,
+  },
+  micButtonIdle: {
+    background: '#2a2a3a',
+    color: '#aaa',
+  },
+  micButtonRecording: {
+    background: '#ef4444',
+    color: '#fff',
+    animation: 'recording-pulse 1.2s ease-in-out infinite',
+  },
+  micButtonDisabled: {
+    background: '#2a2a3a',
+    color: '#444',
+    cursor: 'default',
+  },
+  recordingOverlay: {
+    position: 'absolute',
+    top: 20,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 10,
+    animation: 'fadeInUp 0.3s ease-out',
+  },
+  recordingBubble: {
+    background: 'rgba(239, 68, 68, 0.2)',
+    border: '1px solid rgba(239, 68, 68, 0.3)',
+    borderRadius: 20,
+    padding: '8px 18px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    backdropFilter: 'blur(10px)',
+  },
+  recordingPulse: {
+    width: 10,
+    height: 10,
+    borderRadius: '50%',
+    background: '#ef4444',
+    animation: 'pulse 0.8s ease-in-out infinite',
+  },
+  recordingText: {
+    color: '#fca5a5',
+    fontSize: 13,
+    fontWeight: 500,
   },
 };
