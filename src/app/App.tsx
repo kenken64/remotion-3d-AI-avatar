@@ -2,6 +2,7 @@ import React, {useState, useRef, useEffect, useCallback} from 'react';
 import {Avatar3D} from '../Avatar3D';
 import {useAudioLipSync} from './useAudioLipSync';
 import {sendChatMessage, fetchSpeechAudio, transcribeAudio, ChatMsg} from './api';
+import {AvatarIcon} from './AvatarIcon';
 import type {MouthShape} from '../lipSync';
 
 interface ChatMessage {
@@ -263,6 +264,7 @@ export const App: React.FC = () => {
               background: isRecording ? '#ef4444' : isTranscribing ? '#f59e0b' : isSpeaking ? '#f59e0b' : isThinking ? '#8b5cf6' : '#4ade80',
             }}
           />
+          <AvatarIcon size={32} />
           <h2 style={styles.headerTitle}>AI Avatar</h2>
           <span style={styles.headerSubtitle}>
             {isRecording
@@ -280,7 +282,7 @@ export const App: React.FC = () => {
         <div style={styles.chatMessages}>
           {messages.length === 0 && (
             <div style={styles.emptyState}>
-              <div style={styles.emptyIcon}>🤖</div>
+              <div style={styles.emptyIcon}><AvatarIcon size={56} /></div>
               <p style={styles.emptyText}>
                 Say hello! Type a message and the AI avatar
                 <br />
@@ -304,7 +306,7 @@ export const App: React.FC = () => {
                 }}
               >
                 {msg.sender === 'avatar' && (
-                  <span style={styles.avatarMsgLabel}>🤖 AI Avatar</span>
+                  <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> AI Avatar</span>
                 )}
                 {msg.sender === 'user' && (
                   <span style={styles.userMsgLabel}>You</span>
@@ -657,7 +659,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: '#8899bb',
     fontWeight: 600,
-    display: 'block',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
     marginBottom: 4,
   },
   userMsgLabel: {

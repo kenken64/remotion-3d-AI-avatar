@@ -13,10 +13,24 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Detect if text contains Chinese characters
+function hasChinese(text: string): boolean {
+  return /[\u4e00-\u9fff]/.test(text);
+}
+
 // Chat completions
 app.post('/api/chat', async (req, res) => {
   try {
     const {messages} = req.body;
+
+    // Detect language from the latest user message
+    const lastUserMsg = [...messages].reverse().find((m: any) => m.role === 'user');
+    const userText = lastUserMsg?.content || '';
+    const isChinese = hasChinese(userText);
+
+    const languageInstruction = isChinese
+      ? 'The user is speaking Chinese. You MUST reply in Chinese (Simplified Mandarin). Do not reply in English.'
+      : 'The user is speaking English. You MUST reply in English. Do not reply in Chinese.';
 
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -24,14 +38,14 @@ app.post('/api/chat', async (req, res) => {
         {
           role: 'system',
           content:
-            'You are a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.',
+            `You are a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural. ${languageInstruction}`,
         },
         ...messages,
       ],
       max_tokens: 150,
     });
 
-    const reply = completion.choices[0]?.message?.content || "I'm not sure what to say.";
+    const reply = completion.choices[0]?.message?.content || (isChinese ? '我不确定该说什么。' : "I'm not sure what to say.");
     res.json({reply});
   } catch (err: any) {
     console.error('Chat error:', err.message);
