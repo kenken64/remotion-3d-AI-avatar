@@ -1,9 +1,28 @@
-import React, {useState, useRef, useEffect, useCallback} from 'react';
+import React, {useState, useRef, useEffect, useCallback, useMemo} from 'react';
 import {Avatar3D} from '../Avatar3D';
 import {useAudioLipSync} from './useAudioLipSync';
 import {sendChatMessage, fetchSpeechAudio, transcribeAudio, ChatMsg} from './api';
 import {AvatarIcon} from './AvatarIcon';
 import type {MouthShape} from '../lipSync';
+
+const MOBILE_BREAKPOINT = 768;
+
+const useIsMobile = (): boolean => {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined'
+      ? window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`).matches
+      : false,
+  );
+
+  useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
+    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, []);
+
+  return isMobile;
+};
 
 interface ChatMessage {
   id: number;
@@ -31,6 +50,9 @@ export const App: React.FC = () => {
 
   const {mouthShape, isSpeaking, spokenText, currentSpeech, speak} =
     useAudioLipSync();
+
+  const isMobile = useIsMobile();
+  const styles = useMemo(() => buildStyles(isMobile), [isMobile]);
 
   // Idle mouth when not speaking
   const [idleMouth, setIdleMouth] = useState<MouthShape>('closed');
@@ -466,11 +488,104 @@ export const App: React.FC = () => {
   );
 };
 
-const styles: Record<string, React.CSSProperties> = {
+const buildStyles = (isMobile: boolean): Record<string, React.CSSProperties> => {
+  if (!isMobile) return baseStyles;
+  const merged: Record<string, React.CSSProperties> = {...baseStyles};
+  for (const key of Object.keys(mobileOverrides)) {
+    merged[key] = {...baseStyles[key], ...mobileOverrides[key]};
+  }
+  return merged;
+};
+
+const mobileOverrides: Record<string, React.CSSProperties> = {
+  container: {
+    flexDirection: 'column',
+  },
+  avatarPanel: {
+    flex: '0 0 42dvh',
+    minHeight: '42dvh',
+    maxHeight: '42dvh',
+  },
+  chatPanel: {
+    flex: '1 1 auto',
+    maxWidth: '100%',
+    minWidth: 0,
+    borderLeft: 'none',
+    borderTop: '1px solid rgba(255,255,255,0.06)',
+  },
+  chatHeader: {
+    padding: '12px 16px',
+    gap: 8,
+  },
+  headerTitle: {
+    fontSize: 16,
+  },
+  headerSubtitle: {
+    fontSize: 11,
+  },
+  chatMessages: {
+    padding: '12px 10px',
+  },
+  messageContent: {
+    maxWidth: '88%',
+    padding: '8px 12px',
+  },
+  inputArea: {
+    paddingTop: 10,
+    paddingLeft: 10,
+    paddingRight: 10,
+    paddingBottom: 'calc(10px + env(safe-area-inset-bottom))',
+  },
+  inputWrapper: {
+    padding: '6px 6px 6px 14px',
+    gap: 8,
+  },
+  textarea: {
+    fontSize: 16, // 16px prevents iOS Safari focus-zoom
+  },
+  sendButton: {
+    width: 42,
+    height: 42,
+  },
+  micButton: {
+    width: 42,
+    height: 42,
+  },
+  subtitleBar: {
+    bottom: 12,
+    left: 12,
+    right: 12,
+  },
+  subtitleInner: {
+    padding: '10px 14px',
+    borderRadius: 12,
+  },
+  subtitleText: {
+    fontSize: 14,
+    lineHeight: 1.45,
+  },
+  thinkingOverlay: {
+    top: 12,
+  },
+  speakingOverlay: {
+    top: 12,
+  },
+  recordingOverlay: {
+    top: 12,
+  },
+  emptyText: {
+    fontSize: 13,
+  },
+  emptyIcon: {
+    fontSize: 40,
+  },
+};
+
+const baseStyles: Record<string, React.CSSProperties> = {
   container: {
     display: 'flex',
-    height: '100vh',
-    width: '100vw',
+    height: '100%',
+    width: '100%',
     overflow: 'hidden',
   },
 

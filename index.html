@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0f0f1a" />
     <title>Avatar Lip Sync</title>
     <style>
       * {
@@ -10,15 +14,31 @@
         padding: 0;
         box-sizing: border-box;
       }
+      html,
       body {
         font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
         background: #0f0f1a;
         color: #e0e0e0;
         overflow: hidden;
         height: 100vh;
+        height: 100dvh;
+        -webkit-text-size-adjust: 100%;
+        -webkit-tap-highlight-color: transparent;
       }
       #root {
         height: 100vh;
+        height: 100dvh;
+      }
+      button,
+      textarea {
+        touch-action: manipulation;
+      }
+      /* Prevent iOS Safari from zooming when focusing inputs */
+      @media (max-width: 767px) {
+        textarea,
+        input {
+          font-size: 16px !important;
+        }
       }
     </style>
   </head>
