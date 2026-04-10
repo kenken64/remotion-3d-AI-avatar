@@ -33,7 +33,16 @@ interface ChatMessage {
 }
 
 export const App: React.FC = () => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem('avatar-chat-history');
+      if (saved) {
+        const parsed = JSON.parse(saved) as ChatMessage[];
+        return parsed.map(m => ({...m, timestamp: new Date(m.timestamp)}));
+      }
+    } catch { /* ignore */ }
+    return [];
+  });
   const [inputText, setInputText] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -42,11 +51,16 @@ export const App: React.FC = () => {
   const [playingMsgId, setPlayingMsgId] = useState<number | null>(null);
   const [isChatVisible, setIsChatVisible] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
+  const [panelMode, setPanelMode] = useState<'chat' | 'ptt'>('chat');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const chatShownAtRef = useRef<number>(0);
   const replayAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const messageIdRef = useRef(0);
-  const conversationRef = useRef<ChatMsg[]>([]);
+  const messageIdRef = useRef(messages.length);
+  const conversationRef = useRef<ChatMsg[]>(
+    messages.map(m => ({role: m.sender === 'user' ? 'user' : 'assistant', content: m.text}))
+  );
   const breatheRef = useRef(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -57,39 +71,58 @@ export const App: React.FC = () => {
   const isMobile = useIsMobile();
   const styles = useMemo(() => buildStyles(isMobile), [isMobile]);
 
-  // Keep a stable ref so the WS handler always calls the latest sendMessage
+  // keyboard shortcut to show chat if it was hidden (press 'c')
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'c' || e.key === 'C') setIsChatVisible(true);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // fullscreen change handler
+  useEffect(() => {
+    const handler = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', handler);
+    return () => document.removeEventListener('fullscreenchange', handler);
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    try {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen?.();
+      } else {
+        document.exitFullscreen?.();
+      }
+    } catch (err) {
+      console.warn('Fullscreen toggle failed', err);
+    }
+  }, []);
+
+  // Keep a stable ref so the poll handler always calls the latest sendMessage
   const sendMessageRef = useRef<(text: string) => void>(() => {});
 
-  // WebSocket bridge: receive Telegram messages from OpenClaw
+  // Polling bridge: poll the server for injected messages (HTTP fallback)
   useEffect(() => {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}/remotion/ws`;
-    let ws: WebSocket;
-    let reconnectTimer: ReturnType<typeof setTimeout>;
-
-    const connect = () => {
-      ws = new WebSocket(wsUrl);
-      ws.onopen = () => console.log('[avatar-bridge] Connected to WS bridge');
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data as string);
-          if (data.type === 'telegram_message' && data.text) {
-            sendMessageRef.current(data.text);
-          }
-        } catch {}
-      };
-      ws.onclose = () => {
-        console.log('[avatar-bridge] WS closed, reconnecting in 3s…');
-        reconnectTimer = setTimeout(connect, 3000);
-      };
-      ws.onerror = () => ws.close();
+    let mounted = true;
+    const poll = async () => {
+      try {
+        const res = await fetch('/remotion/api/poll');
+        if (!res.ok) {
+          if (mounted) setTimeout(poll, 1000);
+          return;
+        }
+        const j = await res.json();
+        if (j.messages && j.messages.length) {
+          j.messages.forEach((m: string) => sendMessageRef.current(m));
+        }
+      } catch (e) {
+        // ignore transient errors
+      }
+      if (mounted) setTimeout(poll, 1000);
     };
-
-    connect();
-    return () => {
-      clearTimeout(reconnectTimer);
-      ws?.close();
-    };
+    poll();
+    return () => { mounted = false; };
   }, []);
 
   // Sync mute state into the lip-sync hook so a live in-progress audio
@@ -127,6 +160,13 @@ export const App: React.FC = () => {
       running = false;
     };
   }, []);
+
+  // Persist chat history to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('avatar-chat-history', JSON.stringify(messages));
+    } catch { /* ignore quota errors */ }
+  }, [messages]);
 
   // Auto-scroll
   useEffect(() => {
@@ -271,33 +311,24 @@ export const App: React.FC = () => {
 
   return (
     <div style={styles.container}>
-      {/* Show-chat floating button — fixed to viewport so it sits above the WebGL canvas */}
-      {!isChatVisible && (
-        <button
-          onClick={() => setIsChatVisible(true)}
-          style={styles.showChatButton}
-          aria-label="Show chat panel"
-          title="Show chat"
-        >
-          <svg
-            width="22"
-            height="22"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-          </svg>
-        </button>
-      )}
-
       {/* Left: 3D Avatar */}
       <div style={isChatVisible ? styles.avatarPanel : styles.avatarPanelFull}>
         <div style={styles.avatarScene}>
           <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} />
+
+          {/* Show-chat button — reloads the page so chat is always visible on load */}
+          {!isChatVisible && (
+            <button
+              onClick={() => window.location.reload()}
+              style={styles.showChatButton}
+              aria-label="Show chat panel"
+              title="Show chat"
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </button>
+          )}
 
           {/* Recording indicator */}
           {isRecording && (
@@ -369,6 +400,23 @@ export const App: React.FC = () => {
           <AvatarIcon size={32} />
           <h2 style={styles.headerTitle}>AI Avatar</h2>
           <button
+            onClick={() => setPanelMode((m) => (m === 'chat' ? 'ptt' : 'chat'))}
+            style={{...styles.headerIconButton, marginLeft: 8}}
+            title={panelMode === 'chat' ? 'Switch to push-to-talk' : 'Switch to chat'}
+            aria-pressed={panelMode === 'ptt'}
+          >
+            {panelMode === 'chat' ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1v22" />
+                <circle cx="12" cy="7" r="3" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              </svg>
+            )}
+          </button>
+          <button
             onClick={() => setIsMuted((m) => !m)}
             style={{
               ...styles.headerIconButton,
@@ -411,7 +459,25 @@ export const App: React.FC = () => {
             )}
           </button>
           <button
-            onClick={() => setIsChatVisible(false)}
+            onClick={toggleFullscreen}
+            style={{...styles.headerIconButton, marginLeft: 8}}
+            title={isFullscreen ? 'Exit full screen' : 'Full screen'}
+            aria-pressed={isFullscreen}
+          >
+            {isFullscreen ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 9H5V5" />
+                <path d="M15 15h4v4" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M7 7H3v4" />
+                <path d="M17 17h4v-4" />
+              </svg>
+            )}
+          </button>
+          <button
+            onClick={() => { if (Date.now() - chatShownAtRef.current > 500) setIsChatVisible(false); }}
             style={styles.headerIconButton}
             aria-label="Hide chat panel"
             title="Hide chat"
@@ -601,6 +667,24 @@ export const App: React.FC = () => {
               </svg>
             </button>
           </div>
+
+        {panelMode === 'ptt' && (
+          <div style={styles.pttOverlay}>
+            <div style={styles.pttInstructions}>Hold to talk</div>
+            <button
+              onMouseDown={() => { if (!isRecording) toggleRecording(); }}
+              onMouseUp={() => { if (isRecording) toggleRecording(); }}
+              onMouseLeave={() => { if (isRecording) toggleRecording(); }}
+              onTouchStart={(e) => { e.preventDefault(); if (!isRecording) toggleRecording(); }}
+              onTouchEnd={(e) => { e.preventDefault(); if (isRecording) toggleRecording(); }}
+              style={styles.pttButton}
+            >
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              </svg>
+            </button>
+          </div>
+        )}
         </div>
       </div>
       )}
@@ -626,7 +710,49 @@ export const App: React.FC = () => {
           0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
           50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
         }
+        @keyframes ptt-pulse {
+          0%, 100% { box-shadow: 0 12px 50px rgba(14,165,233,0.45), 0 0 0 0 rgba(14,165,233,0.5); }
+          50% { box-shadow: 0 12px 50px rgba(14,165,233,0.45), 0 0 0 24px rgba(14,165,233,0); }
+        }
       `}</style>
+      {panelMode === 'ptt' && (
+        <div style={styles.fullscreenPtt} role="dialog" aria-label="Push to talk">
+          <button
+            onClick={() => setPanelMode('chat')}
+            style={styles.fullscreenPttClose}
+            aria-label="Close push to talk"
+          >
+            ✕
+          </button>
+          <div style={styles.fullscreenPttInner}>
+            <div style={styles.pttInstructionsLarge}>
+              {isRecording ? '🎙️ Listening...' : isTranscribing ? '⏳ Transcribing...' : 'Hold to talk'}
+            </div>
+            <button
+              onMouseDown={() => { if (!isRecording) toggleRecording(); }}
+              onMouseUp={() => { if (isRecording) toggleRecording(); }}
+              onMouseLeave={() => { if (isRecording) toggleRecording(); }}
+              onTouchStart={(e) => { e.preventDefault(); if (!isRecording) toggleRecording(); }}
+              onTouchEnd={(e) => { e.preventDefault(); if (isRecording) toggleRecording(); }}
+              style={{
+                ...styles.fullscreenPttButton,
+                animation: isRecording ? 'ptt-pulse 1.2s ease-in-out infinite' : undefined,
+                background: isRecording ? '#ef4444' : isTranscribing ? '#f59e0b' : '#0ea5e9',
+              }}
+            >
+              {isRecording ? (
+                <svg width="80" height="80" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="6" width="12" height="12" rx="2" />
+                </svg>
+              ) : (
+                <svg width="80" height="80" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -643,6 +769,7 @@ const buildStyles = (isMobile: boolean): Record<string, React.CSSProperties> => 
 const mobileOverrides: Record<string, React.CSSProperties> = {
   container: {
     flexDirection: 'column',
+    paddingTop: 'env(safe-area-inset-top)',
   },
   avatarPanel: {
     flex: '0 0 42dvh',
@@ -699,6 +826,18 @@ const mobileOverrides: Record<string, React.CSSProperties> = {
     width: 42,
     height: 42,
   },
+  pttButton: {
+    width: 120,
+    height: 120,
+  },
+  fullscreenPttButton: {
+    width: 220,
+    height: 220,
+  },
+  fullscreenPttClose: {
+    width: 40,
+    height: 40,
+  },
   subtitleBar: {
     bottom: 12,
     left: 12,
@@ -752,7 +891,7 @@ const baseStyles: Record<string, React.CSSProperties> = {
     position: 'relative',
   },
   showChatButton: {
-    position: 'fixed',
+    position: 'absolute',
     top: 'calc(16px + env(safe-area-inset-top))',
     right: 'calc(16px + env(safe-area-inset-right))',
     width: 48,
@@ -1125,5 +1264,85 @@ const baseStyles: Record<string, React.CSSProperties> = {
     color: '#fca5a5',
     fontSize: 13,
     fontWeight: 500,
+  },
+
+  // Push-to-talk overlay styles
+  pttOverlay: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'column',
+    gap: 20,
+    padding: 20,
+  },
+  pttInstructions: {
+    color: '#bfc7d9',
+    fontSize: 15,
+  },
+  pttButton: {
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    border: 'none',
+    background: '#0ea5e9',
+    color: '#fff',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    boxShadow: '0 8px 30px rgba(14,165,233,0.35)',
+    cursor: 'pointer',
+  },
+
+  // Full-screen push-to-talk (car mode)
+  fullscreenPtt: {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 99999,
+    background: 'rgba(0,8,20,0.95)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'column',
+    padding: 20,
+  },
+  fullscreenPttInner: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'column',
+    gap: 24,
+  },
+  fullscreenPttClose: {
+    position: 'absolute',
+    top: 14,
+    left: 14,
+    width: 60,
+    height: 60,
+    borderRadius: 12,
+    border: 'none',
+    background: 'rgba(255,255,255,0.06)',
+    color: '#fff',
+    fontSize: 24,
+    cursor: 'pointer',
+  },
+  pttInstructionsLarge: {
+    color: '#d1d8e6',
+    fontSize: 20,
+    fontWeight: 600,
+  },
+  fullscreenPttButton: {
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    border: 'none',
+    background: '#0ea5e9',
+    color: '#fff',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    boxShadow: '0 12px 50px rgba(14,165,233,0.45)',
+    cursor: 'pointer',
+    touchAction: 'manipulation',
   },
 };

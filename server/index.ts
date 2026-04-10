@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import http from 'http';
 import OpenAI, {toFile} from 'openai';
 
 dotenv.config();
@@ -8,6 +9,15 @@ dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json({limit: '10mb'}));
+
+// Tailscale funnel strips the /api path prefix before forwarding here.
+// Re-add it so the routes below match in both cases.
+app.use((req, _res, next) => {
+  if (!req.path.startsWith('/api')) {
+    req.url = '/api' + req.url;
+  }
+  next();
+});
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -102,7 +112,34 @@ app.post('/api/transcribe', async (req, res) => {
   }
 });
 
+// --- Message queue for Telegram → Avatar (no WebSocket support) ---
+// simple in-memory queue for polled clients
+const messageQueue: string[] = [];
+
+// OpenClaw (or any external client) POSTs here to push a message to the avatar
+app.post('/api/inject', (req, res) => {
+  const { text } = req.body;
+  if (!text || typeof text !== 'string') {
+    res.status(400).json({ error: 'text required' });
+    return;
+  }
+
+  // push to in-memory queue so pollers can fetch
+  messageQueue.push(text);
+
+  console.log(`[inject] Queued message (queue length=${messageQueue.length}): ${text.slice(0, 80)}`);
+  res.json({ ok: true, clients: 0 });
+});
+
+// Poll endpoint for browsers
+app.get('/api/poll', (req, res) => {
+  const copies = messageQueue.splice(0, messageQueue.length);
+  res.json({ messages: copies });
+});
+
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+const server = http.createServer(app);
+
+server.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT} (no WebSocket support)`);
 });

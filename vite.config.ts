@@ -4,11 +4,17 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  base: '/remotion',
   server: {
-    port: 3000,
+    port: 3002,
     proxy: {
-      '/api': 'http://localhost:3001',
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
     },
+    // allow the Funnel hostname plus local hosts used during testing
+    allowedHosts: ['openclaw-ff54485d.taile65e6a.ts.net', 'relevant-control-part-alerts.trycloudflare.com', 'pill-berry-tahoe-incl.trycloudflare.com', 'episodes-job-lakes-squad.trycloudflare.com', 'localhost', '127.0.0.1'],
   },
   resolve: {
     alias: {
