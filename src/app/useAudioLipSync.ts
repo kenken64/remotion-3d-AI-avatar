@@ -26,6 +26,14 @@ export function useAudioLipSync() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const rafRef = useRef<number>(0);
   const urlRef = useRef<string>('');
+  const mutedRef = useRef<boolean>(false);
+
+  const setMuted = useCallback((muted: boolean) => {
+    mutedRef.current = muted;
+    if (audioRef.current) {
+      audioRef.current.muted = muted;
+    }
+  }, []);
 
   const cleanup = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -48,6 +56,7 @@ export function useAudioLipSync() {
         urlRef.current = url;
 
         const audio = new Audio(url);
+        audio.muted = mutedRef.current;
         audioRef.current = audio;
 
         setState({
@@ -115,5 +124,6 @@ export function useAudioLipSync() {
   return {
     ...state,
     speak,
+    setMuted,
   };
 }

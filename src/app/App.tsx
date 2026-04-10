@@ -41,6 +41,8 @@ export const App: React.FC = () => {
   const [breatheY, setBreatheY] = useState(0);
   const [playingMsgId, setPlayingMsgId] = useState<number | null>(null);
   const [isChatVisible, setIsChatVisible] = useState(true);
+  const [isMuted, setIsMuted] = useState(false);
+  const replayAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const messageIdRef = useRef(0);
@@ -49,11 +51,20 @@ export const App: React.FC = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
-  const {mouthShape, isSpeaking, spokenText, currentSpeech, speak} =
+  const {mouthShape, isSpeaking, spokenText, currentSpeech, speak, setMuted} =
     useAudioLipSync();
 
   const isMobile = useIsMobile();
   const styles = useMemo(() => buildStyles(isMobile), [isMobile]);
+
+  // Sync mute state into the lip-sync hook so a live in-progress audio
+  // element gets muted immediately and future speak() calls start muted.
+  useEffect(() => {
+    setMuted(isMuted);
+    if (replayAudioRef.current) {
+      replayAudioRef.current.muted = isMuted;
+    }
+  }, [isMuted, setMuted]);
 
   // Idle mouth when not speaking
   const [idleMouth, setIdleMouth] = useState<MouthShape>('closed');
@@ -206,43 +217,49 @@ export const App: React.FC = () => {
   const replayAudio = useCallback((msgId: number, audioUrl: string) => {
     if (playingMsgId === msgId) return; // already playing this one
     const audio = new Audio(audioUrl);
+    audio.muted = isMuted;
+    replayAudioRef.current = audio;
     setPlayingMsgId(msgId);
     audio.play();
-    audio.onended = () => setPlayingMsgId(null);
-    audio.onerror = () => setPlayingMsgId(null);
-  }, [playingMsgId]);
+    const clear = () => {
+      if (replayAudioRef.current === audio) replayAudioRef.current = null;
+      setPlayingMsgId(null);
+    };
+    audio.onended = clear;
+    audio.onerror = clear;
+  }, [playingMsgId, isMuted]);
 
   const activeMouth = isSpeaking ? mouthShape : idleMouth;
 
   return (
     <div style={styles.container}>
+      {/* Show-chat floating button — fixed to viewport so it sits above the WebGL canvas */}
+      {!isChatVisible && (
+        <button
+          onClick={() => setIsChatVisible(true)}
+          style={styles.showChatButton}
+          aria-label="Show chat panel"
+          title="Show chat"
+        >
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+        </button>
+      )}
+
       {/* Left: 3D Avatar */}
       <div style={isChatVisible ? styles.avatarPanel : styles.avatarPanelFull}>
         <div style={styles.avatarScene}>
           <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} />
-
-          {/* Show-chat floating button — visible when chat panel is hidden */}
-          {!isChatVisible && (
-            <button
-              onClick={() => setIsChatVisible(true)}
-              style={styles.showChatButton}
-              aria-label="Show chat panel"
-              title="Show chat"
-            >
-              <svg
-                width="22"
-                height="22"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-              </svg>
-            </button>
-          )}
 
           {/* Recording indicator */}
           {isRecording && (
@@ -314,8 +331,50 @@ export const App: React.FC = () => {
           <AvatarIcon size={32} />
           <h2 style={styles.headerTitle}>AI Avatar</h2>
           <button
+            onClick={() => setIsMuted((m) => !m)}
+            style={{
+              ...styles.headerIconButton,
+              marginLeft: 'auto',
+              ...(isMuted ? styles.headerIconButtonActive : {}),
+            }}
+            aria-label={isMuted ? 'Unmute avatar' : 'Mute avatar'}
+            aria-pressed={isMuted}
+            title={isMuted ? 'Unmute avatar' : 'Mute avatar'}
+          >
+            {isMuted ? (
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <line x1="23" y1="9" x2="17" y2="15" />
+                <line x1="17" y1="9" x2="23" y2="15" />
+              </svg>
+            ) : (
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+              </svg>
+            )}
+          </button>
+          <button
             onClick={() => setIsChatVisible(false)}
-            style={styles.closeChatButton}
+            style={styles.headerIconButton}
             aria-label="Hide chat panel"
             title="Hide chat"
           >
@@ -655,27 +714,25 @@ const baseStyles: Record<string, React.CSSProperties> = {
     position: 'relative',
   },
   showChatButton: {
-    position: 'absolute',
-    top: 20,
-    right: 20,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    background: 'rgba(83, 127, 231, 0.85)',
-    border: '1px solid rgba(255,255,255,0.15)',
+    position: 'fixed',
+    top: 'calc(16px + env(safe-area-inset-top))',
+    right: 'calc(16px + env(safe-area-inset-right))',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    background: '#537fe7',
+    border: '2px solid rgba(255,255,255,0.2)',
     color: '#fff',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    backdropFilter: 'blur(10px)',
-    zIndex: 20,
-    boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+    zIndex: 9999,
+    boxShadow: '0 6px 20px rgba(0,0,0,0.5), 0 0 0 1px rgba(83,127,231,0.5)',
     padding: 0,
     animation: 'fadeInUp 0.25s ease-out',
   },
-  closeChatButton: {
-    marginLeft: 'auto',
+  headerIconButton: {
     width: 28,
     height: 28,
     borderRadius: 14,
@@ -689,6 +746,10 @@ const baseStyles: Record<string, React.CSSProperties> = {
     padding: 0,
     flexShrink: 0,
     transition: 'background 0.2s, color 0.2s',
+  },
+  headerIconButtonActive: {
+    background: 'rgba(239, 68, 68, 0.25)',
+    color: '#fca5a5',
   },
   thinkingOverlay: {
     position: 'absolute',
