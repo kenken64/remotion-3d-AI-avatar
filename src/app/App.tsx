@@ -40,6 +40,7 @@ export const App: React.FC = () => {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [breatheY, setBreatheY] = useState(0);
   const [playingMsgId, setPlayingMsgId] = useState<number | null>(null);
+  const [isChatVisible, setIsChatVisible] = useState(true);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const messageIdRef = useRef(0);
@@ -216,9 +217,32 @@ export const App: React.FC = () => {
   return (
     <div style={styles.container}>
       {/* Left: 3D Avatar */}
-      <div style={styles.avatarPanel}>
+      <div style={isChatVisible ? styles.avatarPanel : styles.avatarPanelFull}>
         <div style={styles.avatarScene}>
           <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} />
+
+          {/* Show-chat floating button — visible when chat panel is hidden */}
+          {!isChatVisible && (
+            <button
+              onClick={() => setIsChatVisible(true)}
+              style={styles.showChatButton}
+              aria-label="Show chat panel"
+              title="Show chat"
+            >
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </button>
+          )}
 
           {/* Recording indicator */}
           {isRecording && (
@@ -278,6 +302,7 @@ export const App: React.FC = () => {
       </div>
 
       {/* Right: Chat Panel */}
+      {isChatVisible && (
       <div style={styles.chatPanel}>
         <div style={styles.chatHeader}>
           <div
@@ -288,6 +313,26 @@ export const App: React.FC = () => {
           />
           <AvatarIcon size={32} />
           <h2 style={styles.headerTitle}>AI Avatar</h2>
+          <button
+            onClick={() => setIsChatVisible(false)}
+            style={styles.closeChatButton}
+            aria-label="Hide chat panel"
+            title="Hide chat"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
           <span style={styles.headerSubtitle}>
             {isRecording
               ? 'Recording... click mic to stop'
@@ -461,6 +506,7 @@ export const App: React.FC = () => {
           </div>
         </div>
       </div>
+      )}
 
       <style>{`
         @keyframes pulse {
@@ -505,6 +551,11 @@ const mobileOverrides: Record<string, React.CSSProperties> = {
     flex: '0 0 42dvh',
     minHeight: '42dvh',
     maxHeight: '42dvh',
+  },
+  avatarPanelFull: {
+    flex: '1 1 auto',
+    minHeight: '100%',
+    maxHeight: '100%',
   },
   chatPanel: {
     flex: '1 1 auto',
@@ -594,10 +645,50 @@ const baseStyles: Record<string, React.CSSProperties> = {
     flex: '1 1 60%',
     position: 'relative',
   },
+  avatarPanelFull: {
+    flex: '1 1 100%',
+    position: 'relative',
+  },
   avatarScene: {
     width: '100%',
     height: '100%',
     position: 'relative',
+  },
+  showChatButton: {
+    position: 'absolute',
+    top: 20,
+    right: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    background: 'rgba(83, 127, 231, 0.85)',
+    border: '1px solid rgba(255,255,255,0.15)',
+    color: '#fff',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backdropFilter: 'blur(10px)',
+    zIndex: 20,
+    boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+    padding: 0,
+    animation: 'fadeInUp 0.25s ease-out',
+  },
+  closeChatButton: {
+    marginLeft: 'auto',
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    border: 'none',
+    background: 'rgba(255,255,255,0.08)',
+    color: '#aaa',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    flexShrink: 0,
+    transition: 'background 0.2s, color 0.2s',
   },
   thinkingOverlay: {
     position: 'absolute',
