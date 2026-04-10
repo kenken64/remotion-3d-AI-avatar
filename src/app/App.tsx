@@ -55,6 +55,41 @@ export const App: React.FC = () => {
   const isMobile = useIsMobile();
   const styles = useMemo(() => buildStyles(isMobile), [isMobile]);
 
+  // Keep a stable ref so the WS handler always calls the latest sendMessage
+  const sendMessageRef = useRef<(text: string) => void>(() => {});
+
+  // WebSocket bridge: receive Telegram messages from OpenClaw
+  useEffect(() => {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${proto}//${window.location.host}/remotion/ws`;
+    let ws: WebSocket;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+
+    const connect = () => {
+      ws = new WebSocket(wsUrl);
+      ws.onopen = () => console.log('[avatar-bridge] Connected to WS bridge');
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data as string);
+          if (data.type === 'telegram_message' && data.text) {
+            sendMessageRef.current(data.text);
+          }
+        } catch {}
+      };
+      ws.onclose = () => {
+        console.log('[avatar-bridge] WS closed, reconnecting in 3s…');
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+      ws.onerror = () => ws.close();
+    };
+
+    connect();
+    return () => {
+      clearTimeout(reconnectTimer);
+      ws?.close();
+    };
+  }, []);
+
   // Idle mouth when not speaking
   const [idleMouth, setIdleMouth] = useState<MouthShape>('closed');
 
@@ -137,6 +172,9 @@ export const App: React.FC = () => {
       ]);
     }
   }, [isThinking, isSpeaking, speak]);
+
+  // Keep ref in sync so the stable WS effect always calls the latest sendMessage
+  useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
 
   const handleSend = useCallback(() => {
     const trimmed = inputText.trim();
