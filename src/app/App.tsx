@@ -112,26 +112,7 @@ export const App: React.FC = () => {
   // double-tap helper ref for mobile fullscreen
   const lastTapRef = useRef<number>(0);
 
-  // shake-to-start: detect device motion shakes and start mic (mobile)
-  useEffect(() => {
-    if (!isMobile) return;
-    let lastShake = 0;
-    const handler = (ev: DeviceMotionEvent) => {
-      const a = ev.accelerationIncludingGravity || ev.acceleration;
-      if (!a) return;
-      const x = a.x || 0; const y = a.y || 0; const z = a.z || 0;
-      const mag = Math.sqrt(x * x + y * y + z * z);
-      // threshold tuned empirically; ignore repeated shakes within 1.5s
-      if (mag > 22 && Date.now() - lastShake > 1500) {
-        lastShake = Date.now();
-        if (!isRecording) toggleRecording();
-      }
-    };
-    window.addEventListener('devicemotion', handler as EventListener);
-    return () => window.removeEventListener('devicemotion', handler as EventListener);
-  }, [isMobile, isRecording, toggleRecording]);
-
-  const toggleFullscreen = useCallback(() => {
+const toggleFullscreen = useCallback(() => {
     try {
       if (!document.fullscreenElement) {
         document.documentElement.requestFullscreen?.();
@@ -362,6 +343,25 @@ export const App: React.FC = () => {
       console.error('Mic access denied:', err);
     }
   }, [isRecording, isThinking, isSpeaking, isTranscribing, sendMessage]);
+
+  // shake-to-start: detect device motion shakes and start mic (mobile)
+  useEffect(() => {
+    if (!isMobile) return;
+    let lastShake = 0;
+    const handler = (ev: DeviceMotionEvent) => {
+      const a = ev.accelerationIncludingGravity || ev.acceleration;
+      if (!a) return;
+      const x = a.x || 0; const y = a.y || 0; const z = a.z || 0;
+      const mag = Math.sqrt(x * x + y * y + z * z);
+      // threshold tuned empirically; ignore repeated shakes within 1.5s
+      if (mag > 22 && Date.now() - lastShake > 1500) {
+        lastShake = Date.now();
+        if (!isRecording) toggleRecording();
+      }
+    };
+    window.addEventListener('devicemotion', handler as EventListener);
+    return () => window.removeEventListener('devicemotion', handler as EventListener);
+  }, [isMobile, isRecording, toggleRecording]);
 
   // Replay avatar audio
   const replayAudio = useCallback((msgId: number, audioUrl: string) => {
