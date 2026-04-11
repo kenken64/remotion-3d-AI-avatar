@@ -101,10 +101,24 @@ export const App: React.FC = () => {
     return () => document.removeEventListener('fullscreenchange', handler);
   }, []);
 
+  // hide chat by default on mobile to keep avatar visible
+  useEffect(() => {
+    if (isMobile) {
+      setIsChatVisible(false);
+      setMobileSheetOpen(false);
+    }
+  }, [isMobile]);
+
+  // double-tap helper ref for mobile fullscreen
+  const lastTapRef = useRef<number>(0);
+
   const toggleFullscreen = useCallback(() => {
     try {
       if (!document.fullscreenElement) {
         document.documentElement.requestFullscreen?.();
+        // hide chat when entering fullscreen for an immersive view
+        setIsChatVisible(false);
+        setMobileSheetOpen(false);
       } else {
         document.exitFullscreen?.();
       }
@@ -257,12 +271,34 @@ export const App: React.FC = () => {
 
   // Toggle mic recording: click to start, click again to stop
   const toggleRecording = useCallback(async () => {
+    // small beep helper
+    const playBeep = (freq = 600, duration = 0.06) => {
+      try {
+        const Ctx = (window.AudioContext || (window as any).webkitAudioContext);
+        if (!Ctx) return;
+        const ctx = new Ctx();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = 'sine';
+        o.frequency.value = freq;
+        g.gain.value = 0.0015;
+        o.connect(g);
+        g.connect(ctx.destination);
+        o.start();
+        g.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + duration);
+        setTimeout(() => { try { o.stop(); ctx.close(); } catch (e) {} }, duration * 1000 + 20);
+      } catch (e) { /* ignore audio errors */ }
+    };
+
     if (isRecording) {
       // Stop recording
       if (mediaRecorderRef.current) {
         mediaRecorderRef.current.stop();
         mediaRecorderRef.current = null;
         setIsRecording(false);
+        // feedback
+        navigator.vibrate?.(40);
+        playBeep(420, 0.06);
       }
       return;
     }
@@ -300,6 +336,9 @@ export const App: React.FC = () => {
       mediaRecorderRef.current = mediaRecorder;
       mediaRecorder.start();
       setIsRecording(true);
+      // feedback
+      navigator.vibrate?.(20);
+      playBeep(780, 0.06);
     } catch (err) {
       console.error('Mic access denied:', err);
     }
@@ -327,7 +366,15 @@ export const App: React.FC = () => {
     <div style={styles.container}>
       {/* Left: 3D Avatar */}
       <div style={isChatVisible ? styles.avatarPanel : styles.avatarPanelFull}>
-        <div style={{...styles.avatarScene, paddingTop: isMobile ? 'env(safe-area-inset-top)' : undefined}}>
+        <div
+          style={{...styles.avatarScene, paddingTop: isMobile ? 'env(safe-area-inset-top)' : undefined}}
+          onDoubleClick={() => toggleFullscreen()}
+          onTouchStart={(e) => {
+            const now = Date.now();
+            if (now - (lastTapRef.current || 0) < 300) { toggleFullscreen(); lastTapRef.current = 0; }
+            else { lastTapRef.current = now; }
+          }}
+        >
           <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} isMobile={isMobile} />
 
           {/* Show-chat button — reloads the page so chat is always visible on load */}
