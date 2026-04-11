@@ -8,17 +8,30 @@ import type {MouthShape} from '../lipSync';
 const MOBILE_BREAKPOINT = 768;
 
 const useIsMobile = (): boolean => {
-  const [isMobile, setIsMobile] = useState(() =>
-    typeof window !== 'undefined'
-      ? window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`).matches
-      : false,
-  );
+  const getMatch = () => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const m = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
+      return m.matches;
+    } catch {
+      return window.innerWidth < MOBILE_BREAKPOINT;
+    }
+  };
+
+  const [isMobile, setIsMobile] = useState(getMatch);
 
   useEffect(() => {
     const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
-    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
-    mql.addEventListener('change', onChange);
-    return () => mql.removeEventListener('change', onChange);
+    const onChange = (e: MediaQueryListEvent | MediaQueryList) => setIsMobile('matches' in e ? e.matches : mql.matches);
+    // Attach listener with fallback for older browsers
+    if (typeof mql.addEventListener === 'function') {
+      mql.addEventListener('change', onChange as any);
+      return () => mql.removeEventListener('change', onChange as any);
+    }
+    // @ts-ignore fallback
+    mql.addListener(onChange as any);
+    // @ts-ignore fallback cleanup
+    return () => mql.removeListener(onChange as any);
   }, []);
 
   return isMobile;
@@ -53,6 +66,7 @@ export const App: React.FC = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [panelMode, setPanelMode] = useState<'chat' | 'ptt'>('chat');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const chatShownAtRef = useRef<number>(0);
   const replayAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -319,7 +333,10 @@ export const App: React.FC = () => {
           {/* Show-chat button — reloads the page so chat is always visible on load */}
           {!isChatVisible && (
             <button
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                if (isMobile) { setMobileSheetOpen(true); setIsChatVisible(true); }
+                else { window.location.reload(); }
+              }}
               style={styles.showChatButton}
               aria-label="Show chat panel"
               title="Show chat"
@@ -388,7 +405,7 @@ export const App: React.FC = () => {
       </div>
 
       {/* Right: Chat Panel */}
-      {isChatVisible && (
+      {isChatVisible && !isMobile && (
       <div style={styles.chatPanel}>
         <div style={styles.chatHeader}>
           <div
@@ -703,6 +720,90 @@ export const App: React.FC = () => {
         )}
         </div>
       </div>
+      )}
+
+      {/* Mobile bottom sheet chat (swipe-up style) */}
+      {isMobile && (
+        <div
+          style={{
+            position: 'fixed',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: mobileSheetOpen ? '70dvh' : '12vh',
+            transition: 'height 260ms ease',
+            zIndex: 20000,
+            background: '#12121f',
+            borderTop: '1px solid rgba(255,255,255,0.06)',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          {/* handle */}
+          <div style={{width: '100%', display: 'flex', justifyContent: 'center', padding: 8}}>
+            <div
+              onClick={() => setMobileSheetOpen((s) => !s)}
+              style={{width: 56, height: 6, borderRadius: 6, background: 'rgba(255,255,255,0.08)', cursor: 'pointer'}}
+            />
+          </div>
+
+          {/* sheet content */}
+          <div style={{flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
+            <div style={{...styles.chatHeader, padding: '10px 14px'}}>
+              <div
+                style={{
+                  ...styles.headerDot,
+                  background: isRecording ? '#ef4444' : isTranscribing ? '#f59e0b' : isSpeaking ? '#f59e0b' : isThinking ? '#8b5cf6' : '#4ade80',
+                }}
+              />
+              <AvatarIcon size={28} />
+              <h2 style={{...styles.headerTitle, fontSize: 16}}>Simon Lau</h2>
+              <button onClick={() => { setMobileSheetOpen(false); setIsChatVisible(false); }} style={{...styles.headerIconButton, marginLeft: 'auto'}} title="Close chat">✕</button>
+            </div>
+
+            <div style={{...styles.chatMessages, padding: '10px', paddingBottom: 12, overflowY: 'auto', flex: 1}}>
+              {messages.length === 0 && (
+                <div style={styles.emptyState}>
+                  <div style={styles.emptyIcon}><AvatarIcon size={40} /></div>
+                  <p style={styles.emptyText}>Say hello — type a message or hold the mic to talk.</p>
+                </div>
+              )}
+
+              {messages.map((msg) => (
+                <div key={msg.id} style={{...styles.messageBubble, ...(msg.sender === 'user' ? styles.userMessage : styles.avatarMessage)}}>
+                  <div style={{...styles.messageContent, ...(msg.sender === 'user' ? styles.userContent : styles.avatarContent)}}>
+                    <p style={styles.messageText}>{msg.text}</p>
+                    <div style={styles.messageFooter}>
+                      <span style={styles.timestamp}>{msg.timestamp.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              <div ref={chatEndRef} />
+            </div>
+
+            <div style={{padding: 10, borderTop: '1px solid rgba(255,255,255,0.04)'}}>
+              <div style={{display: 'flex', gap: 8, alignItems: 'flex-end'}}>
+                <textarea
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={isThinking ? 'Waiting...' : 'Type a message...'}
+                  style={{flex: 1, resize: 'none', minHeight: 36, maxHeight: 120, padding: 8, borderRadius: 8, background: 'rgba(255,255,255,0.03)', color: '#fff', border: 'none'}}
+                  rows={1}
+                  disabled={isThinking || isSpeaking}
+                />
+                <button onClick={handleSend} disabled={!inputText.trim() || isThinking || isSpeaking} style={{...styles.sendButton, ...(inputText.trim() ? styles.sendButtonActive : styles.sendButtonDisabled)}}>
+                  Send
+                </button>
+                <button onClick={toggleRecording} style={{...styles.micButton, ...(isRecording ? styles.micButtonRecording : styles.micButtonIdle)}}>
+                  {isRecording ? 'Stop' : 'Mic'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       <style>{`
