@@ -775,6 +775,26 @@ function Head({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; breat
       </mesh>
 
       {/* ===== MOUTH ===== */}
+
+      {/* MOUSTACHE (stylized) */}
+      <group position={[0, -0.22, 0.82]}>
+        {/* Left curl */}
+        <mesh position={[-0.12, 0.02, 0]} rotation={[0, 0, 0.5]} scale={[1, 0.35, 0.5]}>
+          <capsuleGeometry args={[0.04, 0.09, 6, 12]} />
+          <meshStandardMaterial color="#2c1b12" roughness={0.6} metalness={0.05} />
+        </mesh>
+        {/* Right curl */}
+        <mesh position={[0.12, 0.02, 0]} rotation={[0, 0, -0.5]} scale={[1, 0.35, 0.5]}>
+          <capsuleGeometry args={[0.04, 0.09, 6, 12]} />
+          <meshStandardMaterial color="#2c1b12" roughness={0.6} metalness={0.05} />
+        </mesh>
+        {/* Center stache */}
+        <mesh position={[0, 0.01, 0]} scale={[1, 0.25, 0.4]}>
+          <boxGeometry args={[0.18, 0.04, 0.04]} />
+          <meshStandardMaterial color="#2c1b12" roughness={0.6} metalness={0.02} />
+        </mesh>
+      </group>
+
       <MouthMesh shape={mouthShape} isSpeaking={isSpeaking} />
     </group>
   );
