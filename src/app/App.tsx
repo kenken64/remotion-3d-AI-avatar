@@ -112,6 +112,25 @@ export const App: React.FC = () => {
   // double-tap helper ref for mobile fullscreen
   const lastTapRef = useRef<number>(0);
 
+  // shake-to-start: detect device motion shakes and start mic (mobile)
+  useEffect(() => {
+    if (!isMobile) return;
+    let lastShake = 0;
+    const handler = (ev: DeviceMotionEvent) => {
+      const a = ev.accelerationIncludingGravity || ev.acceleration;
+      if (!a) return;
+      const x = a.x || 0; const y = a.y || 0; const z = a.z || 0;
+      const mag = Math.sqrt(x * x + y * y + z * z);
+      // threshold tuned empirically; ignore repeated shakes within 1.5s
+      if (mag > 22 && Date.now() - lastShake > 1500) {
+        lastShake = Date.now();
+        if (!isRecording) toggleRecording();
+      }
+    };
+    window.addEventListener('devicemotion', handler as EventListener);
+    return () => window.removeEventListener('devicemotion', handler as EventListener);
+  }, [isMobile, isRecording, toggleRecording]);
+
   const toggleFullscreen = useCallback(() => {
     try {
       if (!document.fullscreenElement) {
@@ -370,6 +389,13 @@ export const App: React.FC = () => {
           style={{...styles.avatarScene, paddingTop: isMobile ? 'env(safe-area-inset-top)' : undefined}}
           onDoubleClick={() => toggleFullscreen()}
           onTouchStart={(e) => {
+            // try to request motion permission on first user touch (iOS requirement)
+            try {
+              if (typeof (DeviceMotionEvent) !== 'undefined' && typeof (DeviceMotionEvent as any).requestPermission === 'function') {
+                (DeviceMotionEvent as any).requestPermission().catch(() => {});
+              }
+            } catch (err) {}
+
             const now = Date.now();
             if (now - (lastTapRef.current || 0) < 300) { toggleFullscreen(); lastTapRef.current = 0; }
             else { lastTapRef.current = now; }
