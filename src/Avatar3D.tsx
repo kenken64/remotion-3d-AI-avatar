@@ -191,28 +191,26 @@ function SpaceBackground() {
 
   return (
     <>
-      {/* Starfield */}
-      <Stars radius={80} depth={60} count={3000} factor={3} saturation={0.2} fade speed={0.5} />
+      {/* Starfield (expanded so it fills the frustum) */}
+      <Stars radius={200} depth={140} count={4000} factor={4} saturation={0.15} fade speed={0.4} />
 
-
-
-      {/* Nebula clouds */}
+      {/* Nebula clouds (pushed further back + larger) */}
       <group ref={nebulaRef}>
-        <mesh position={[-4, 3, -22]}>
-          <sphereGeometry args={[4, 16, 16]} />
-          <meshBasicMaterial color="#2a0845" transparent opacity={0.12} />
+        <mesh position={[-6, 4, -40]}> 
+          <sphereGeometry args={[10, 24, 24]} />
+          <meshBasicMaterial color="#2a0845" transparent opacity={0.12} depthWrite={false} toneMapped={false} />
         </mesh>
-        <mesh position={[5, -2, -24]}>
-          <sphereGeometry args={[5, 16, 16]} />
-          <meshBasicMaterial color="#0a1545" transparent opacity={0.15} />
+        <mesh position={[7, -3, -44]}> 
+          <sphereGeometry args={[12, 24, 24]} />
+          <meshBasicMaterial color="#0a1545" transparent opacity={0.14} depthWrite={false} toneMapped={false} />
         </mesh>
-        <mesh position={[2, 4, -26]}>
-          <sphereGeometry args={[3, 16, 16]} />
-          <meshBasicMaterial color="#301520" transparent opacity={0.08} />
+        <mesh position={[3, 5, -48]}> 
+          <sphereGeometry args={[8, 20, 20]} />
+          <meshBasicMaterial color="#301520" transparent opacity={0.09} depthWrite={false} toneMapped={false} />
         </mesh>
       </group>
 
-      {/* Shooting stars (increased frequency) + fiery meteors */}
+      {/* Shooting stars + meteors */}
       <ShootingStar />
       <ShootingStar />
       <ShootingStar />
@@ -220,9 +218,9 @@ function SpaceBackground() {
       <ShootingMeteor />
       <ShootingMeteor />
 
-      {/* Subtle distant glow */}
-      <mesh position={[0, -3, -12]}> 
-        <planeGeometry args={[60, 10]} />
+      {/* Subtle distant glow (pushed far back so it doesn't cut the scene) */}
+      <mesh position={[0, -8, -60]}> 
+        <planeGeometry args={[180, 60]} />
         <meshBasicMaterial color="#000010" transparent opacity={0.95} side={THREE.DoubleSide} />
       </mesh>
     </>
