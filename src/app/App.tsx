@@ -313,8 +313,8 @@ export const App: React.FC = () => {
     <div style={styles.container}>
       {/* Left: 3D Avatar */}
       <div style={isChatVisible ? styles.avatarPanel : styles.avatarPanelFull}>
-        <div style={styles.avatarScene}>
-          <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} />
+        <div style={{...styles.avatarScene, paddingTop: isMobile ? 'env(safe-area-inset-top)' : undefined}}>
+          <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} isMobile={isMobile} />
 
           {/* Show-chat button — reloads the page so chat is always visible on load */}
           {!isChatVisible && (
@@ -398,7 +398,7 @@ export const App: React.FC = () => {
             }}
           />
           <AvatarIcon size={32} />
-          <h2 style={styles.headerTitle}>AI Avatar</h2>
+          <h2 style={styles.headerTitle}>Simon Lau</h2>
           <button
             onClick={() => setPanelMode((m) => (m === 'chat' ? 'ptt' : 'chat'))}
             style={{...styles.headerIconButton, marginLeft: 8}}
@@ -496,6 +496,22 @@ export const App: React.FC = () => {
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           </button>
+
+          {/* Clear conversation */}
+          <button
+            onClick={() => { setMessages([]); localStorage.removeItem('avatar-chat-history'); messageIdRef.current = 0; }}
+            style={{...styles.headerIconButton, marginLeft: 8}}
+            aria-label="Clear conversation"
+            title="Clear conversation"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+              <path d="M10 11v6" />
+              <path d="M14 11v6" />
+              <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+            </svg>
+          </button>
           <span style={styles.headerSubtitle}>
             {isRecording
               ? 'Recording... click mic to stop'
@@ -536,7 +552,7 @@ export const App: React.FC = () => {
                 }}
               >
                 {msg.sender === 'avatar' && (
-                  <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> AI Avatar</span>
+                  <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> Simon Lau</span>
                 )}
                 {msg.sender === 'user' && (
                   <span style={styles.userMsgLabel}>You</span>
@@ -772,9 +788,9 @@ const mobileOverrides: Record<string, React.CSSProperties> = {
     paddingTop: 'env(safe-area-inset-top)',
   },
   avatarPanel: {
-    flex: '0 0 42dvh',
-    minHeight: '42dvh',
-    maxHeight: '42dvh',
+    flex: '0 0 30dvh',
+    minHeight: '30dvh',
+    maxHeight: '30dvh',
   },
   avatarPanelFull: {
     flex: '1 1 auto',
@@ -800,6 +816,7 @@ const mobileOverrides: Record<string, React.CSSProperties> = {
   },
   chatMessages: {
     padding: '12px 10px',
+    paddingBottom: 120,
   },
   messageContent: {
     maxWidth: '88%',
@@ -889,6 +906,24 @@ const baseStyles: Record<string, React.CSSProperties> = {
     width: '100%',
     height: '100%',
     position: 'relative',
+  },
+  mobileAvatarIcon: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 'env(safe-area-inset-top)'
+  },
+  mobileAvatarFloating: {
+    position: 'fixed',
+    top: 'calc(8px + env(safe-area-inset-top))',
+    left: '12px',
+    zIndex: 20000,
+    background: 'rgba(0,0,0,0.3)',
+    borderRadius: 9999,
+    padding: 6,
+    backdropFilter: 'blur(6px)'
   },
   showChatButton: {
     position: 'absolute',
@@ -1053,6 +1088,8 @@ const baseStyles: Record<string, React.CSSProperties> = {
     flex: 1,
     overflowY: 'auto',
     padding: '16px 14px',
+    paddingBottom: 120,
+    boxSizing: 'border-box',
     display: 'flex',
     flexDirection: 'column',
     gap: 10,

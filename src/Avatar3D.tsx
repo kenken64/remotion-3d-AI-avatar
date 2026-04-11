@@ -15,7 +15,7 @@ function ShootingStar() {
     x: 0, y: 0, z: -10,
     vx: 0, vy: 0,
     life: 0,
-    maxLife: 0,
+    maxLife: 0.6 + Math.random() * 0.5,
   });
 
   useFrame((_, delta) => {
@@ -24,17 +24,15 @@ function ShootingStar() {
     if (!s.active) {
       s.timer -= delta;
       if (s.timer <= 0) {
-        // Spawn a new shooting star at random position on upper edges
         s.active = true;
         s.x = (Math.random() - 0.3) * 14;
         s.y = Math.random() * 4 + 3;
         s.z = -8 - Math.random() * 15;
-        const angle = -0.4 - Math.random() * 0.8; // downward angle
+        const angle = -0.4 - Math.random() * 0.8;
         const speed = 8 + Math.random() * 6;
         s.vx = Math.cos(angle) * speed;
         s.vy = Math.sin(angle) * speed;
         s.life = 0;
-        s.maxLife = 0.6 + Math.random() * 0.5;
       }
     }
 
@@ -70,7 +68,7 @@ function ShootingStar() {
 
       if (s.life >= s.maxLife) {
         s.active = false;
-        s.timer = 3 + Math.random() * 6; // next one in 3–9s
+        s.timer = 3 + Math.random() * 6;
         if (meshRef.current) meshRef.current.visible = false;
         if (trailRef.current) trailRef.current.visible = false;
       }
@@ -79,12 +77,10 @@ function ShootingStar() {
 
   return (
     <>
-      {/* Star head */}
       <mesh ref={meshRef} visible={false}>
         <sphereGeometry args={[0.06, 8, 8]} />
         <meshBasicMaterial color="#ffffff" transparent opacity={0} />
       </mesh>
-      {/* Trail */}
       <mesh ref={trailRef} visible={false}>
         <planeGeometry args={[1, 0.04]} />
         <meshBasicMaterial color="#aaccff" transparent opacity={0} side={THREE.DoubleSide} />
@@ -93,94 +89,142 @@ function ShootingStar() {
   );
 }
 
-function SpaceBackground() {
-  const nebulaRef = useRef<THREE.Group>(null);
-  const particlesRef = useRef<THREE.Points>(null);
+// Fiery meteor
+function ShootingMeteor() {
+  const headRef = useRef<THREE.Mesh>(null);
+  const trailRef = useRef<THREE.Mesh>(null);
+  const emberRef = useRef<THREE.Points>(null);
+  const state = useRef({active: false, timer: Math.random() * 6 + 2, x: 0, y: 0, z: -10, vx: 0, vy: 0, life: 0, maxLife: 0});
 
-  // Slowly rotate the nebula and particles
   useFrame((_, delta) => {
-    if (nebulaRef.current) {
-      nebulaRef.current.rotation.z += delta * 0.01;
+    const s = state.current;
+    if (!s.active) {
+      s.timer -= delta;
+      if (s.timer <= 0) {
+        s.active = true;
+        s.x = (Math.random() - 0.3) * 14;
+        s.y = Math.random() * 6 + 2;
+        s.z = -8 - Math.random() * 15;
+        const angle = -0.6 - Math.random() * 0.6;
+        const speed = 14 + Math.random() * 8;
+        s.vx = Math.cos(angle) * speed;
+        s.vy = Math.sin(angle) * speed;
+        s.life = 0;
+        s.maxLife = 0.9 + Math.random() * 0.6;
+      }
     }
-    if (particlesRef.current) {
-      particlesRef.current.rotation.y += delta * 0.005;
-      particlesRef.current.rotation.x += delta * 0.002;
+    if (s.active) {
+      s.life += delta;
+      s.x += s.vx * delta;
+      s.y += s.vy * delta;
+      const progress = s.life / s.maxLife;
+      const opacity = Math.max(1 - progress * 1.2, 0);
+      const trailLen = 1.2 + progress * 2.5;
+
+      if (headRef.current) {
+        headRef.current.position.set(s.x, s.y, s.z);
+        headRef.current.visible = true;
+        (headRef.current.material as THREE.MeshBasicMaterial).opacity = opacity;
+      }
+      if (trailRef.current) {
+        const angle = Math.atan2(s.vy, s.vx);
+        trailRef.current.position.set(s.x - Math.cos(angle) * trailLen * 0.6, s.y - Math.sin(angle) * trailLen * 0.6, s.z);
+        trailRef.current.rotation.z = angle;
+        trailRef.current.scale.set(trailLen, 1, 1);
+        trailRef.current.visible = true;
+        (trailRef.current.material as THREE.MeshBasicMaterial).opacity = opacity * 0.8;
+      }
+
+      if (emberRef.current) {
+        emberRef.current.position.set(s.x, s.y, s.z);
+        emberRef.current.visible = true;
+      }
+
+      if (s.life >= s.maxLife) {
+        s.active = false;
+        s.timer = 4 + Math.random() * 8;
+        if (headRef.current) headRef.current.visible = false;
+        if (trailRef.current) trailRef.current.visible = false;
+        if (emberRef.current) emberRef.current.visible = false;
+      }
     }
   });
 
-  // Floating dust particles
-  const particleGeo = useMemo(() => {
-    const geo = new THREE.BufferGeometry();
-    const count = 200;
-    const positions = new Float32Array(count * 3);
-    const sizes = new Float32Array(count);
+  // ember particle geometry
+  const emberGeo = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    const count = 60;
+    const pos = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
-      positions[i * 3] = (Math.random() - 0.5) * 20;
-      positions[i * 3 + 1] = (Math.random() - 0.5) * 20;
-      positions[i * 3 + 2] = (Math.random() - 0.5) * 15 - 5;
-      sizes[i] = Math.random() * 0.04 + 0.01;
+      pos[i * 3] = (Math.random() - 0.5) * 0.1;
+      pos[i * 3 + 1] = (Math.random() - 0.5) * 0.1;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 0.1;
     }
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
-    return geo;
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    return g;
   }, []);
 
   return (
     <>
-      {/* Deep space starfield */}
+      <mesh ref={headRef} visible={false}>
+        <sphereGeometry args={[0.12, 12, 12]} />
+        <meshBasicMaterial color="#ff8c00" transparent opacity={0} />
+      </mesh>
+      <mesh ref={trailRef} visible={false}>
+        <planeGeometry args={[1.6, 0.12]} />
+        <meshBasicMaterial color="#ff511a" transparent opacity={0} side={THREE.DoubleSide} />
+      </mesh>
+      <points ref={emberRef} geometry={emberGeo} visible={false}>
+        <pointsMaterial size={0.04} color="#ffcc66" transparent opacity={0.9} depthWrite={false} />
+      </points>
+    </>
+  );
+}
+
+function SpaceBackground() {
+  const nebulaRef = useRef<THREE.Group>(null);
+
+  // Shooting stars handled by ShootingStar components
+  useFrame((_, delta) => {
+    if (nebulaRef.current) nebulaRef.current.rotation.z += delta * 0.01;
+  });
+
+  return (
+    <>
+      {/* Starfield */}
       <Stars radius={80} depth={60} count={3000} factor={3} saturation={0.2} fade speed={0.5} />
 
-      {/* Shooting stars — multiple so they overlap naturally */}
-      <ShootingStar />
-      <ShootingStar />
-      <ShootingStar />
 
-      {/* Nebula glow clouds */}
+
+      {/* Nebula clouds */}
       <group ref={nebulaRef}>
-        {/* Purple nebula */}
-        <mesh position={[-4, 3, -15]}>
+        <mesh position={[-4, 3, -22]}>
           <sphereGeometry args={[4, 16, 16]} />
           <meshBasicMaterial color="#2a0845" transparent opacity={0.12} />
         </mesh>
-        <mesh position={[-3.5, 2.5, -14]}>
-          <sphereGeometry args={[3, 16, 16]} />
-          <meshBasicMaterial color="#4a1080" transparent opacity={0.08} />
-        </mesh>
-
-        {/* Blue nebula */}
-        <mesh position={[5, -2, -18]}>
+        <mesh position={[5, -2, -24]}>
           <sphereGeometry args={[5, 16, 16]} />
           <meshBasicMaterial color="#0a1545" transparent opacity={0.15} />
         </mesh>
-        <mesh position={[4, -1, -16]}>
-          <sphereGeometry args={[3.5, 16, 16]} />
-          <meshBasicMaterial color="#1a3070" transparent opacity={0.08} />
-        </mesh>
-
-        {/* Warm accent nebula */}
-        <mesh position={[2, 4, -20]}>
+        <mesh position={[2, 4, -26]}>
           <sphereGeometry args={[3, 16, 16]} />
-          <meshBasicMaterial color="#301520" transparent opacity={0.1} />
-        </mesh>
-
-        {/* Distant bright cluster */}
-        <mesh position={[-2, -3, -25]}>
-          <sphereGeometry args={[1.5, 12, 12]} />
-          <meshBasicMaterial color="#223366" transparent opacity={0.2} />
+          <meshBasicMaterial color="#301520" transparent opacity={0.08} />
         </mesh>
       </group>
 
-      {/* Floating dust particles */}
-      <points ref={particlesRef} geometry={particleGeo}>
-        <pointsMaterial
-          size={0.03}
-          color="#6688cc"
-          transparent
-          opacity={0.4}
-          sizeAttenuation
-          depthWrite={false}
-        />
-      </points>
+      {/* Shooting stars (increased frequency) + fiery meteors */}
+      <ShootingStar />
+      <ShootingStar />
+      <ShootingStar />
+      <ShootingStar />
+      <ShootingMeteor />
+      <ShootingMeteor />
+
+      {/* Subtle distant glow */}
+      <mesh position={[0, -3, -12]}> 
+        <planeGeometry args={[60, 10]} />
+        <meshBasicMaterial color="#000010" transparent opacity={0.95} side={THREE.DoubleSide} />
+      </mesh>
     </>
   );
 }
@@ -741,12 +785,15 @@ interface Avatar3DProps {
   mouthShape: MouthShape;
   breatheY: number;
   isSpeaking?: boolean;
+  isMobile?: boolean;
 }
 
-export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeaking = false}) => {
+export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeaking = false, isMobile = false}) => {
+  const cameraPos = isMobile ? [0, -0.2, 6.5] : [0, -0.3, 4.5];
+  const fov = isMobile ? 30 : 35;
   return (
     <Canvas
-      camera={{position: [0, -0.3, 4.5], fov: 35}}
+      camera={{position: cameraPos, fov}}
       style={{width: '100%', height: '100%'}}
       gl={{antialias: true, alpha: true}}
     >
