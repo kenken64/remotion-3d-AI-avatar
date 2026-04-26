@@ -6,6 +6,10 @@ A browser-based AI avatar built with React, Vite, React Three Fiber, and Remotio
 ![AI](https://img.shields.io/badge/AI-OpenAI%20GPT--4o--mini-green)
 ![TTS](https://img.shields.io/badge/TTS-OpenAI%20Speech-orange)
 
+## Screenshot
+
+![Mona Lau AI Avatar](./screen.png)
+
 ## Features
 
 - **Framed 3D Avatar** — A GLB-based head-and-shoulders avatar rendered with React Three Fiber, with idle motion, blinking, and viseme-driven mouth animation.
