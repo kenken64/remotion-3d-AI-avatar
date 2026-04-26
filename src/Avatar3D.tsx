@@ -1,12 +1,14 @@
 import React, {useRef, useMemo, useEffect, useState} from 'react';
 import {Canvas, useFrame} from '@react-three/fiber';
-import {Environment, PerspectiveCamera, Stars, useGLTF} from '@react-three/drei';
+import {Environment, PerspectiveCamera, Stars, useGLTF, useTexture} from '@react-three/drei';
 import * as THREE from 'three';
 import type {MouthShape} from './lipSync';
 
 // Matches `base: '/remotion'` in vite.config.ts.
 const AVATAR_URL = '/remotion/avatar.glb';
+const BACKGROUND_URL = '/remotion/background.webp';
 useGLTF.preload(AVATAR_URL);
+useTexture.preload(BACKGROUND_URL);
 
 // ========== Space background with nebula and particles ==========
 // ========== Shooting star ==========
@@ -185,6 +187,27 @@ function ShootingMeteor() {
   );
 }
 
+function ImageBackdrop() {
+  const texture = useTexture(BACKGROUND_URL);
+
+  useEffect(() => {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+  }, [texture]);
+
+  return (
+    <mesh position={[0, 0, -58]}>
+      <planeGeometry args={[178, 100]} />
+      <meshBasicMaterial
+        map={texture}
+        toneMapped={false}
+        depthWrite={false}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
 function SpaceBackground() {
   const nebulaRef = useRef<THREE.Group>(null);
 
@@ -195,6 +218,8 @@ function SpaceBackground() {
 
   return (
     <>
+      <ImageBackdrop />
+
       {/* Starfield (expanded so it fills the frustum) */}
       <Stars radius={200} depth={140} count={4000} factor={4} saturation={0.15} fade speed={0.4} />
 
@@ -225,7 +250,7 @@ function SpaceBackground() {
       {/* Subtle distant glow (pushed far back so it doesn't cut the scene) */}
       <mesh position={[0, -8, -60]}>
         <planeGeometry args={[180, 60]} />
-        <meshBasicMaterial color="#000010" transparent opacity={0.95} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#001018" transparent opacity={0.18} side={THREE.DoubleSide} />
       </mesh>
     </>
   );
@@ -430,7 +455,7 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeak
     >
       <FramedCamera position={cameraPos} target={cameraTarget} fov={fov} />
 
-      <color attach="background" args={['#030510']} />
+      <color attach="background" args={['#03131a']} />
 
       {/* Space background */}
       <SpaceBackground />

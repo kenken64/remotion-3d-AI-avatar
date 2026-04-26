@@ -665,9 +665,9 @@ const toggleFullscreen = useCallback(() => {
             <div
               style={{
                 position: 'absolute',
-                left: isMobile ? 12 : 16,
-                bottom: isMobile ? 12 : 16,
-                width: isMobile ? 120 : 200,
+                right: isMobile ? 12 : 16,
+                top: isMobile ? 12 : 16,
+                width: isMobile ? 168 : 280,
                 aspectRatio: '4 / 3',
                 borderRadius: 12,
                 overflow: 'hidden',
