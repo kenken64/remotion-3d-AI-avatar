@@ -23,9 +23,42 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Chat goes to OpenClaw's OpenAI-compatible endpoint; TTS/STT stay on OpenAI.
+const chatClient = new OpenAI({
+  baseURL: process.env.CHAT_BASE_URL || 'http://127.0.0.1:18789/v1',
+  apiKey: process.env.CHAT_API_KEY || process.env.OPENAI_API_KEY,
+});
+const CHAT_MODEL = process.env.CHAT_MODEL || 'gpt-4o-mini';
+
 // Detect if text contains Chinese characters
 function hasChinese(text: string): boolean {
   return /[\u4e00-\u9fff]/.test(text);
+}
+
+// Heuristic: does this user message look like an image-generation request?
+function isImageRequest(text: string): boolean {
+  const t = text.toLowerCase();
+  // English: "send/show/generate/draw/create/make/give me a picture/image/photo of ..."
+  if (/\b(send|show|generate|draw|create|make|give|paint|sketch)\b[^.?!]*\b(picture|image|photo|pic|photograph|drawing|painting|sketch|illustration)\b/.test(t)) return true;
+  if (/\b(picture|image|photo|drawing|illustration)\s+of\b/.test(t)) return true;
+  // Chinese: \u753b / \u751f\u6210\u56fe / \u4e00\u5f20\u56fe etc.
+  if (/(\u753b\u4e00[\u5f20\u5e45]|\u751f\u6210.*\u56fe|\u53d1.*\u56fe\u7247|\u6765\u4e00\u5f20.*\u56fe)/.test(text)) return true;
+  return false;
+}
+
+async function generateImage(prompt: string): Promise<string | null> {
+  try {
+    const result = await openai.images.generate({
+      model: 'dall-e-3',
+      prompt,
+      size: '1024x1024',
+      n: 1,
+    });
+    return result.data?.[0]?.url || null;
+  } catch (err: any) {
+    console.error('Image gen error:', err.message);
+    return null;
+  }
 }
 
 // Chat completions
@@ -42,24 +75,95 @@ app.post('/api/chat', async (req, res) => {
       ? 'The user is speaking Chinese. You MUST reply in Chinese (Simplified Mandarin). Do not reply in English.'
       : 'The user is speaking English. You MUST reply in English. Do not reply in Chinese.';
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+    const wantsImage = isImageRequest(userText);
+
+    const [completion, imageUrl] = await Promise.all([
+      chatClient.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content:
+              `You are Simon Lau, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${wantsImage ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.' : ''} ${languageInstruction}`,
+          },
+          ...messages,
+        ],
+        max_tokens: 150,
+      }),
+      wantsImage ? generateImage(userText) : Promise.resolve(null),
+    ]);
+
+    const reply = completion.choices[0]?.message?.content || (isChinese ? '我不确定该说什么。' : "I'm not sure what to say.");
+    res.json({reply, imageUrl: imageUrl || undefined});
+  } catch (err: any) {
+    console.error('Chat error:', err.message);
+    res.status(500).json({error: 'Failed to get chat response'});
+  }
+});
+
+// Vision: send a webcam frame to a vision-capable model and ask it to describe.
+// Routed through OpenAI (gpt-4o-mini) by default since OpenClaw's chat
+// gateway doesn't accept OpenAI multimodal image_url content.
+const visionClient = process.env.VISION_USE_OPENCLAW === '1' ? chatClient : openai;
+const VISION_MODEL = process.env.VISION_MODEL || 'gpt-4o-mini';
+
+app.post('/api/vision', async (req, res) => {
+  try {
+    const {imageBase64, prompt} = req.body;
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      res.status(400).json({error: 'imageBase64 required'});
+      return;
+    }
+    const dataUrl = imageBase64.startsWith('data:')
+      ? imageBase64
+      : `data:image/jpeg;base64,${imageBase64}`;
+
+    const completion = await visionClient.chat.completions.create({
+      model: VISION_MODEL,
       messages: [
         {
           role: 'system',
           content:
-            `You are a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural. ${languageInstruction}`,
+            'You are Simon Lau, a friendly, witty AI avatar. The user is showing you a webcam frame — describe what you see clearly and concisely in 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural.',
         },
-        ...messages,
+        {
+          role: 'user',
+          content: [
+            {type: 'text', text: prompt || 'What do you see in this image?'},
+            {type: 'image_url', image_url: {url: dataUrl}},
+          ] as any,
+        },
       ],
-      max_tokens: 150,
+      max_tokens: 200,
     });
 
-    const reply = completion.choices[0]?.message?.content || (isChinese ? '我不确定该说什么。' : "I'm not sure what to say.");
+    const reply =
+      completion.choices[0]?.message?.content ||
+      "I can't quite tell what I'm looking at.";
     res.json({reply});
   } catch (err: any) {
-    console.error('Chat error:', err.message);
-    res.status(500).json({error: 'Failed to get chat response'});
+    console.error('Vision error:', err.message);
+    res.status(500).json({error: 'Failed to analyze image'});
+  }
+});
+
+// Image generation (DALL-E 3)
+app.post('/api/image', async (req, res) => {
+  try {
+    const {prompt} = req.body;
+    if (!prompt || typeof prompt !== 'string') {
+      res.status(400).json({error: 'prompt required'});
+      return;
+    }
+    const imageUrl = await generateImage(prompt);
+    if (!imageUrl) {
+      res.status(500).json({error: 'Failed to generate image'});
+      return;
+    }
+    res.json({imageUrl});
+  } catch (err: any) {
+    console.error('Image error:', err.message);
+    res.status(500).json({error: 'Failed to generate image'});
   }
 });
 
@@ -96,16 +200,33 @@ app.post('/api/transcribe', async (req, res) => {
     }
 
     const buffer = Buffer.from(audio, 'base64');
-    const file = await toFile(buffer, 'recording.webm', {type: 'audio/webm'});
 
-    // Try English first, then Chinese if result is low confidence
-    const transcription = await openai.audio.transcriptions.create({
-      model: 'whisper-1',
-      file,
-      prompt: 'This audio is in English or Chinese (Mandarin).',
-    });
+    // Run English and Chinese transcriptions in parallel; pick the one
+    // Whisper is more confident in (higher avg_logprob). This avoids
+    // English audio being misdetected as Chinese.
+    const [en, zh] = await Promise.all([
+      openai.audio.transcriptions.create({
+        model: 'whisper-1',
+        file: await toFile(buffer, 'recording.webm', {type: 'audio/webm'}),
+        language: 'en',
+        response_format: 'verbose_json',
+      }),
+      openai.audio.transcriptions.create({
+        model: 'whisper-1',
+        file: await toFile(buffer, 'recording.webm', {type: 'audio/webm'}),
+        language: 'zh',
+        response_format: 'verbose_json',
+      }),
+    ]);
 
-    res.json({text: transcription.text});
+    const avgLogprob = (t: any) => {
+      const segs = t.segments || [];
+      if (!segs.length) return -Infinity;
+      return segs.reduce((s: number, x: any) => s + (x.avg_logprob ?? -10), 0) / segs.length;
+    };
+
+    const winner = avgLogprob(en) >= avgLogprob(zh) ? en : zh;
+    res.json({text: winner.text});
   } catch (err: any) {
     console.error('Transcription error:', err.message);
     res.status(500).json({error: 'Failed to transcribe audio'});

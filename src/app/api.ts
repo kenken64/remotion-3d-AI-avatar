@@ -3,7 +3,12 @@ export interface ChatMsg {
   content: string;
 }
 
-export async function sendChatMessage(messages: ChatMsg[]): Promise<string> {
+export interface ChatReply {
+  reply: string;
+  imageUrl?: string;
+}
+
+export async function sendChatMessage(messages: ChatMsg[]): Promise<ChatReply> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -15,7 +20,7 @@ export async function sendChatMessage(messages: ChatMsg[]): Promise<string> {
   }
 
   const data = await res.json();
-  return data.reply;
+  return {reply: data.reply, imageUrl: data.imageUrl};
 }
 
 export async function transcribeAudio(audioBlob: Blob): Promise<string> {

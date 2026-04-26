@@ -43,6 +43,7 @@ interface ChatMessage {
   sender: 'user' | 'avatar';
   timestamp: Date;
   audioUrl?: string; // object URL for TTS audio replay
+  imageUrl?: string; // generated image URL (e.g. DALL-E)
 }
 
 export const App: React.FC = () => {
@@ -67,8 +68,12 @@ export const App: React.FC = () => {
   const [panelMode, setPanelMode] = useState<'chat' | 'ptt'>('chat');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const [wakeEnabled, setWakeEnabled] = useState(false);
+  const [webcamEnabled, setWebcamEnabled] = useState(false);
   const chatShownAtRef = useRef<number>(0);
   const replayAudioRef = useRef<HTMLAudioElement | null>(null);
+  const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
+  const webcamStreamRef = useRef<MediaStream | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const messageIdRef = useRef(messages.length);
@@ -218,7 +223,7 @@ const toggleFullscreen = useCallback(() => {
     setIsThinking(true);
 
     try {
-      const reply = await sendChatMessage(conversationRef.current);
+      const {reply, imageUrl} = await sendChatMessage(conversationRef.current);
       conversationRef.current.push({role: 'assistant', content: reply});
 
       const audioBlob = await fetchSpeechAudio(reply);
@@ -235,6 +240,7 @@ const toggleFullscreen = useCallback(() => {
           sender: 'avatar',
           timestamp: new Date(),
           audioUrl,
+          imageUrl,
         },
       ]);
     } catch (err) {
@@ -339,6 +345,61 @@ const toggleFullscreen = useCallback(() => {
       // feedback
       navigator.vibrate?.(20);
       playBeep(780, 0.06);
+
+      // Silence detection: stop recording after sustained silence
+      try {
+        const Ctx = (window.AudioContext || (window as any).webkitAudioContext);
+        if (Ctx) {
+          const audioCtx = new Ctx();
+          const source = audioCtx.createMediaStreamSource(stream);
+          const analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 1024;
+          source.connect(analyser);
+          const buf = new Uint8Array(analyser.fftSize);
+          const SILENCE_RMS = 0.02;
+          const SILENCE_MS = 1500;
+          const MAX_MS = 15000;
+          const startedAt = Date.now();
+          let lastVoiceAt = 0;
+          let voiceHeard = false;
+          const tick = () => {
+            if (mediaRecorderRef.current !== mediaRecorder) {
+              try { audioCtx.close(); } catch {}
+              return;
+            }
+            analyser.getByteTimeDomainData(buf);
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) {
+              const v = (buf[i] - 128) / 128;
+              sum += v * v;
+            }
+            const rms = Math.sqrt(sum / buf.length);
+            const now = Date.now();
+            if (rms > SILENCE_RMS) {
+              voiceHeard = true;
+              lastVoiceAt = now;
+            }
+            const elapsed = now - startedAt;
+            const sinceVoice = now - lastVoiceAt;
+            const shouldStop =
+              elapsed > MAX_MS ||
+              (voiceHeard && sinceVoice > SILENCE_MS);
+            if (shouldStop) {
+              try { audioCtx.close(); } catch {}
+              if (mediaRecorderRef.current === mediaRecorder) {
+                try { mediaRecorder.stop(); } catch {}
+                mediaRecorderRef.current = null;
+                setIsRecording(false);
+                navigator.vibrate?.(40);
+                playBeep(420, 0.06);
+              }
+              return;
+            }
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }
+      } catch (e) { /* ignore audio analyser errors */ }
     } catch (err) {
       console.error('Mic access denied:', err);
     }
@@ -362,6 +423,173 @@ const toggleFullscreen = useCallback(() => {
     window.addEventListener('devicemotion', handler as EventListener);
     return () => window.removeEventListener('devicemotion', handler as EventListener);
   }, [isMobile, isRecording, toggleRecording]);
+
+  // Capture current webcam frame and ask OpenClaw to describe it.
+  const captureAndIdentify = useCallback(async () => {
+    const video = webcamVideoRef.current;
+    if (!webcamEnabled || !video || !video.videoWidth) {
+      console.warn('captureAndIdentify: webcam not ready');
+      return;
+    }
+    if (isThinking || isSpeaking || isRecording || isTranscribing) return;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: ++messageIdRef.current,
+        text: 'What do you see?',
+        sender: 'user',
+        timestamp: new Date(),
+        imageUrl: dataUrl,
+      },
+    ]);
+
+    setIsThinking(true);
+    try {
+      const res = await fetch('/api/vision', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({imageBase64: dataUrl}),
+      });
+      if (!res.ok) throw new Error(`Vision failed: ${res.status}`);
+      const {reply} = await res.json();
+      conversationRef.current.push({role: 'user', content: 'What do you see?'});
+      conversationRef.current.push({role: 'assistant', content: reply});
+
+      const audioBlob = await fetchSpeechAudio(reply);
+      const audioUrl = URL.createObjectURL(audioBlob);
+      setIsThinking(false);
+      await speak(reply, audioBlob);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: ++messageIdRef.current,
+          text: reply,
+          sender: 'avatar',
+          timestamp: new Date(),
+          audioUrl,
+        },
+      ]);
+    } catch (err) {
+      console.error('Vision error:', err);
+      setIsThinking(false);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: ++messageIdRef.current,
+          text: "Sorry, I couldn't analyze that image.",
+          sender: 'avatar',
+          timestamp: new Date(),
+        },
+      ]);
+    }
+  }, [webcamEnabled, isThinking, isSpeaking, isRecording, isTranscribing, speak]);
+
+  // Webcam: acquire stream when enabled, release when disabled.
+  useEffect(() => {
+    if (!webcamEnabled) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {facingMode: 'user', width: {ideal: 480}, height: {ideal: 360}},
+          audio: false,
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        webcamStreamRef.current = stream;
+        if (webcamVideoRef.current) {
+          webcamVideoRef.current.srcObject = stream;
+          webcamVideoRef.current.play().catch(() => {});
+        }
+      } catch (err) {
+        console.error('Webcam access denied:', err);
+        if (!cancelled) setWebcamEnabled(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      const s = webcamStreamRef.current;
+      if (s) s.getTracks().forEach((t) => t.stop());
+      webcamStreamRef.current = null;
+      if (webcamVideoRef.current) webcamVideoRef.current.srcObject = null;
+    };
+  }, [webcamEnabled]);
+
+  // Wake-word listener ("hey simon") via Web Speech API.
+  // Only active when enabled AND avatar is idle (not recording / speaking / etc.)
+  // to avoid feedback from its own voice.
+  useEffect(() => {
+    if (!wakeEnabled) return;
+    if (isRecording || isTranscribing || isThinking || isSpeaking) return;
+    const SR: any =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
+      console.warn('SpeechRecognition not supported in this browser');
+      return;
+    }
+    const recog = new SR();
+    recog.continuous = true;
+    recog.interimResults = true;
+    recog.lang = 'en-US';
+    let stopped = false;
+    let triggered = false; // single-shot per listener instance — interim results fire repeatedly
+    let restartTimer: number | null = null;
+
+    recog.onresult = (e: any) => {
+      if (triggered) return;
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const transcript: string = e.results[i][0].transcript.toLowerCase();
+        // Vision wake phrases — capture webcam frame and identify.
+        if (/(what (do|can) you see|look at (this|me)|identify (this|the object|what'?s here)|describe (this|the (image|scene|object)))/.test(transcript)) {
+          if (webcamEnabled) {
+            triggered = true;
+            stopped = true; // prevent onend auto-restart
+            try { recog.stop(); } catch {}
+            captureAndIdentify();
+            return;
+          }
+          // webcam off — ignore so listener keeps running
+        }
+        // Talk wake phrase — start mic recording.
+        if (/\b(hey|hi|hey,?)\s+(simon|simons)\b/.test(transcript)) {
+          triggered = true;
+          stopped = true;
+          try { recog.stop(); } catch {}
+          toggleRecording();
+          return;
+        }
+      }
+    };
+    recog.onerror = (e: any) => {
+      if (e.error !== 'no-speech' && e.error !== 'aborted') {
+        console.warn('Wake word recognition error:', e.error);
+      }
+    };
+    recog.onend = () => {
+      if (stopped) return;
+      restartTimer = window.setTimeout(() => {
+        try { recog.start(); } catch {}
+      }, 250);
+    };
+    try { recog.start(); } catch (e) { /* may need a user gesture */ }
+
+    return () => {
+      stopped = true;
+      if (restartTimer) clearTimeout(restartTimer);
+      try { recog.stop(); } catch {}
+    };
+  }, [wakeEnabled, isRecording, isTranscribing, isThinking, isSpeaking, toggleRecording, webcamEnabled, captureAndIdentify]);
 
   // Replay avatar audio
   const replayAudio = useCallback((msgId: number, audioUrl: string) => {
@@ -402,6 +630,38 @@ const toggleFullscreen = useCallback(() => {
           }}
         >
           <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} isMobile={isMobile} />
+
+          {/* Webcam preview — corner panel; positioned away from avatar's face */}
+          {webcamEnabled && (
+            <div
+              style={{
+                position: 'absolute',
+                left: isMobile ? 12 : 16,
+                bottom: isMobile ? 12 : 16,
+                width: isMobile ? 120 : 200,
+                aspectRatio: '4 / 3',
+                borderRadius: 12,
+                overflow: 'hidden',
+                background: '#000',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                zIndex: 5,
+              }}
+            >
+              <video
+                ref={webcamVideoRef}
+                autoPlay
+                muted
+                playsInline
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  transform: 'scaleX(-1)',
+                }}
+              />
+            </div>
+          )}
 
           {/* Show-chat button — reloads the page so chat is always visible on load */}
           {!isChatVisible && (
@@ -507,10 +767,49 @@ const toggleFullscreen = useCallback(() => {
             )}
           </button>
           <button
-            onClick={() => setIsMuted((m) => !m)}
+            onClick={() => setWebcamEnabled((w) => !w)}
             style={{
               ...styles.headerIconButton,
               marginLeft: 'auto',
+              ...(webcamEnabled ? styles.headerIconButtonActive : {}),
+            }}
+            aria-label={webcamEnabled ? 'Hide webcam' : 'Show webcam'}
+            aria-pressed={webcamEnabled}
+            title={webcamEnabled ? 'Hide webcam' : 'Show webcam'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="23 7 16 12 23 17 23 7" />
+              <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+            </svg>
+          </button>
+          <button
+            onClick={() => setWakeEnabled((w) => !w)}
+            style={{
+              ...styles.headerIconButton,
+              marginLeft: 8,
+              ...(wakeEnabled ? styles.headerIconButtonActive : {}),
+            }}
+            aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey simon")'}
+            aria-pressed={wakeEnabled}
+            title={wakeEnabled ? 'Wake word ON — say "hey simon"' : 'Enable wake word ("hey simon")'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M12 4v2" />
+              <path d="M12 18v2" />
+              <path d="M4 12h2" />
+              <path d="M18 12h2" />
+              <path d="M6.3 6.3l1.4 1.4" />
+              <path d="M16.3 16.3l1.4 1.4" />
+              <path d="M6.3 17.7l1.4-1.4" />
+              <path d="M16.3 7.7l1.4-1.4" />
+            </svg>
+          </button>
+          <button
+            onClick={() => setIsMuted((m) => !m)}
+            style={{
+              ...styles.headerIconButton,
+              marginLeft: 8,
               ...(isMuted ? styles.headerIconButtonActive : {}),
             }}
             aria-label={isMuted ? 'Unmute avatar' : 'Mute avatar'}
@@ -648,6 +947,20 @@ const toggleFullscreen = useCallback(() => {
                   <span style={styles.userMsgLabel}>You</span>
                 )}
                 <p style={styles.messageText}>{msg.text}</p>
+                {msg.imageUrl && (
+                  <a href={msg.imageUrl} target="_blank" rel="noreferrer">
+                    <img
+                      src={msg.imageUrl}
+                      alt="generated"
+                      style={{
+                        marginTop: 8,
+                        maxWidth: '100%',
+                        borderRadius: 12,
+                        display: 'block',
+                      }}
+                    />
+                  </a>
+                )}
                 <div style={styles.messageFooter}>
                   {msg.sender === 'avatar' && msg.audioUrl && (
                     <button
@@ -683,11 +996,19 @@ const toggleFullscreen = useCallback(() => {
           {isThinking && (
             <div style={{...styles.messageBubble, ...styles.avatarMessage}}>
               <div style={{...styles.messageContent, ...styles.avatarContent}}>
-                <span style={styles.avatarMsgLabel}>🤖 AI Avatar</span>
+                <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> Simon Lau</span>
                 <div style={styles.typingIndicator}>
                   <div style={styles.typingDot} />
                   <div style={{...styles.typingDot, animationDelay: '0.15s'}} />
                   <div style={{...styles.typingDot, animationDelay: '0.3s'}} />
+                </div>
+                <div style={styles.messageFooter}>
+                  <span style={styles.timestamp}>
+                    {new Date().toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
                 </div>
               </div>
             </div>
@@ -831,7 +1152,30 @@ const toggleFullscreen = useCallback(() => {
               />
               <AvatarIcon size={28} />
               <h2 style={{...styles.headerTitle, fontSize: 16}}>Simon Lau</h2>
-              <button onClick={() => { setMobileSheetOpen(false); setIsChatVisible(false); }} style={{...styles.headerIconButton, marginLeft: 'auto'}} title="Close chat">✕</button>
+              <button
+                onClick={() => setWakeEnabled((w) => !w)}
+                style={{
+                  ...styles.headerIconButton,
+                  marginLeft: 'auto',
+                  ...(wakeEnabled ? styles.headerIconButtonActive : {}),
+                }}
+                aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey simon")'}
+                aria-pressed={wakeEnabled}
+                title={wakeEnabled ? 'Wake word ON — say "hey simon"' : 'Enable wake word ("hey simon")'}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M12 4v2" />
+                  <path d="M12 18v2" />
+                  <path d="M4 12h2" />
+                  <path d="M18 12h2" />
+                  <path d="M6.3 6.3l1.4 1.4" />
+                  <path d="M16.3 16.3l1.4 1.4" />
+                  <path d="M6.3 17.7l1.4-1.4" />
+                  <path d="M16.3 7.7l1.4-1.4" />
+                </svg>
+              </button>
+              <button onClick={() => { setMobileSheetOpen(false); setIsChatVisible(false); }} style={{...styles.headerIconButton, marginLeft: 8}} title="Close chat">✕</button>
             </div>
 
             <div style={{...styles.chatMessages, padding: '10px', paddingBottom: 12, overflowY: 'auto', flex: 1}}>
@@ -846,6 +1190,11 @@ const toggleFullscreen = useCallback(() => {
                 <div key={msg.id} style={{...styles.messageBubble, ...(msg.sender === 'user' ? styles.userMessage : styles.avatarMessage)}}>
                   <div style={{...styles.messageContent, ...(msg.sender === 'user' ? styles.userContent : styles.avatarContent)}}>
                     <p style={styles.messageText}>{msg.text}</p>
+                    {msg.imageUrl && (
+                      <a href={msg.imageUrl} target="_blank" rel="noreferrer">
+                        <img src={msg.imageUrl} alt="generated" style={{marginTop: 8, maxWidth: '100%', borderRadius: 12, display: 'block'}} />
+                      </a>
+                    )}
                     <div style={styles.messageFooter}>
                       <span style={styles.timestamp}>{msg.timestamp.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</span>
                     </div>
