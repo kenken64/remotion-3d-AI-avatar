@@ -84,7 +84,7 @@ app.post('/api/chat', async (req, res) => {
           {
             role: 'system',
             content:
-              `You are Simon Lau, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${wantsImage ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.' : ''} ${languageInstruction}`,
+              `You are Mona Lau, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${wantsImage ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.' : ''} ${languageInstruction}`,
           },
           ...messages,
         ],
@@ -124,7 +124,7 @@ app.post('/api/vision', async (req, res) => {
         {
           role: 'system',
           content:
-            'You are Simon Lau, a friendly, witty AI avatar. The user is showing you a webcam frame — describe what you see clearly and concisely in 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural.',
+            'You are Mona Lau, a friendly, witty AI avatar. The user is showing you a webcam frame — describe what you see clearly and concisely in 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural.',
         },
         {
           role: 'user',
@@ -170,7 +170,7 @@ app.post('/api/image', async (req, res) => {
 // Text-to-speech
 app.post('/api/tts', async (req, res) => {
   try {
-    const {text, voice = 'onyx'} = req.body;
+    const {text, voice = 'nova'} = req.body;
 
     const mp3 = await openai.audio.speech.create({
       model: 'tts-1',

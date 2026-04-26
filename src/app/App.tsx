@@ -526,70 +526,99 @@ const toggleFullscreen = useCallback(() => {
     };
   }, [webcamEnabled]);
 
-  // Wake-word listener ("hey simon") via Web Speech API.
-  // Only active when enabled AND avatar is idle (not recording / speaking / etc.)
-  // to avoid feedback from its own voice.
+  // Refs the wake listener uses to read live state without re-subscribing.
+  // Without these, the dep array would churn on every breath-tick render
+  // and the recognizer would tear down before it could finish a session.
+  const wakeFlagsRef = useRef({isRecording, isTranscribing, isThinking, isSpeaking, webcamEnabled});
+  wakeFlagsRef.current = {isRecording, isTranscribing, isThinking, isSpeaking, webcamEnabled};
+  const toggleRecordingRef = useRef(toggleRecording);
+  toggleRecordingRef.current = toggleRecording;
+  const captureAndIdentifyRef = useRef(captureAndIdentify);
+  captureAndIdentifyRef.current = captureAndIdentify;
+
+  // Wake-word listener ("hey mona") via Web Speech API.
+  // Mounted once per wakeEnabled toggle; ignores results when avatar is busy.
   useEffect(() => {
-    if (!wakeEnabled) return;
-    if (isRecording || isTranscribing || isThinking || isSpeaking) return;
+    if (!wakeEnabled) {
+      console.log('[wake] disabled — listener not running');
+      return;
+    }
     const SR: any =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) {
-      console.warn('SpeechRecognition not supported in this browser');
+      console.warn('[wake] SpeechRecognition not supported in this browser — use Chrome/Edge');
       return;
     }
+    // Chrome's `continuous: true` is flaky — silently aborts in many setups
+    // (browser extensions w/ SES, certain mic stacks). Single-shot sessions
+    // with rapid restart are far more reliable for wake-word use.
     const recog = new SR();
-    recog.continuous = true;
-    recog.interimResults = true;
+    recog.continuous = false;
+    recog.interimResults = false;
+    recog.maxAlternatives = 1;
     recog.lang = 'en-US';
     let stopped = false;
-    let triggered = false; // single-shot per listener instance — interim results fire repeatedly
+    let triggered = false;
     let restartTimer: number | null = null;
+
+    recog.onstart = () => {
+      // Per-session reset so a previous trigger doesn't lock out future ones.
+      triggered = false;
+      console.log('[wake] listener started — say "hey Mona"');
+    };
+    recog.onaudiostart = () => console.log('[wake] mic capturing audio');
+    recog.onspeechstart = () => console.log('[wake] speech detected');
 
     recog.onresult = (e: any) => {
       if (triggered) return;
+      const flags = wakeFlagsRef.current;
+      // Avatar busy → ignore results but keep recognizer alive.
+      if (flags.isRecording || flags.isTranscribing || flags.isThinking || flags.isSpeaking) return;
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const transcript: string = e.results[i][0].transcript.toLowerCase();
+        const isFinal = e.results[i].isFinal;
+        console.log(`[wake] heard${isFinal ? ' (final)' : ' (interim)'}:`, transcript);
         // Vision wake phrases — capture webcam frame and identify.
         if (/(what (do|can) you see|look at (this|me)|identify (this|the object|what'?s here)|describe (this|the (image|scene|object)))/.test(transcript)) {
-          if (webcamEnabled) {
-            triggered = true;
-            stopped = true; // prevent onend auto-restart
-            try { recog.stop(); } catch {}
-            captureAndIdentify();
+          if (flags.webcamEnabled) {
+            triggered = true; // session-local; reset on next onstart
+            captureAndIdentifyRef.current();
             return;
           }
           // webcam off — ignore so listener keeps running
         }
-        // Talk wake phrase — start mic recording.
-        if (/\b(hey|hi|hey,?)\s+(simon|simons)\b/.test(transcript)) {
-          triggered = true;
-          stopped = true;
-          try { recog.stop(); } catch {}
-          toggleRecording();
+        // Talk wake phrase — accept common phonetic mishearings of "mona".
+        if (/\b(hey|hi|ok)\s+(mona|moana|mauna|monah|moaner|moner|monna|munna)\b/.test(transcript)) {
+          triggered = true; // session-local; reset on next onstart
+          toggleRecordingRef.current();
           return;
         }
       }
     };
     recog.onerror = (e: any) => {
-      if (e.error !== 'no-speech' && e.error !== 'aborted') {
-        console.warn('Wake word recognition error:', e.error);
-      }
+      console.warn('[wake] recognition error:', e.error);
     };
     recog.onend = () => {
-      if (stopped) return;
+      if (stopped) {
+        console.log('[wake] listener stopped (cleanup)');
+        return;
+      }
       restartTimer = window.setTimeout(() => {
-        try { recog.start(); } catch {}
-      }, 250);
+        try { recog.start(); } catch (err) { console.warn('[wake] restart failed:', err); }
+      }, 100);
     };
-    try { recog.start(); } catch (e) { /* may need a user gesture */ }
+    try {
+      recog.start();
+    } catch (e) {
+      console.warn('[wake] initial start failed (likely needs a user gesture):', e);
+    }
 
     return () => {
       stopped = true;
       if (restartTimer) clearTimeout(restartTimer);
       try { recog.stop(); } catch {}
     };
-  }, [wakeEnabled, isRecording, isTranscribing, isThinking, isSpeaking, toggleRecording, webcamEnabled, captureAndIdentify]);
+  }, [wakeEnabled]);
 
   // Replay avatar audio
   const replayAudio = useCallback((msgId: number, audioUrl: string) => {
@@ -748,7 +777,7 @@ const toggleFullscreen = useCallback(() => {
             }}
           />
           <AvatarIcon size={32} />
-          <h2 style={styles.headerTitle}>Simon Lau</h2>
+          <h2 style={styles.headerTitle}>Mona Lau</h2>
           <button
             onClick={() => setPanelMode((m) => (m === 'chat' ? 'ptt' : 'chat'))}
             style={{...styles.headerIconButton, marginLeft: 8}}
@@ -789,9 +818,9 @@ const toggleFullscreen = useCallback(() => {
               marginLeft: 8,
               ...(wakeEnabled ? styles.headerIconButtonActive : {}),
             }}
-            aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey simon")'}
+            aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey mona")'}
             aria-pressed={wakeEnabled}
-            title={wakeEnabled ? 'Wake word ON — say "hey simon"' : 'Enable wake word ("hey simon")'}
+            title={wakeEnabled ? 'Wake word ON — say "hey mona"' : 'Enable wake word ("hey mona")'}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
@@ -941,7 +970,7 @@ const toggleFullscreen = useCallback(() => {
                 }}
               >
                 {msg.sender === 'avatar' && (
-                  <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> Simon Lau</span>
+                  <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> Mona Lau</span>
                 )}
                 {msg.sender === 'user' && (
                   <span style={styles.userMsgLabel}>You</span>
@@ -996,7 +1025,7 @@ const toggleFullscreen = useCallback(() => {
           {isThinking && (
             <div style={{...styles.messageBubble, ...styles.avatarMessage}}>
               <div style={{...styles.messageContent, ...styles.avatarContent}}>
-                <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> Simon Lau</span>
+                <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> Mona Lau</span>
                 <div style={styles.typingIndicator}>
                   <div style={styles.typingDot} />
                   <div style={{...styles.typingDot, animationDelay: '0.15s'}} />
@@ -1151,7 +1180,7 @@ const toggleFullscreen = useCallback(() => {
                 }}
               />
               <AvatarIcon size={28} />
-              <h2 style={{...styles.headerTitle, fontSize: 16}}>Simon Lau</h2>
+              <h2 style={{...styles.headerTitle, fontSize: 16}}>Mona Lau</h2>
               <button
                 onClick={() => setWakeEnabled((w) => !w)}
                 style={{
@@ -1159,9 +1188,9 @@ const toggleFullscreen = useCallback(() => {
                   marginLeft: 'auto',
                   ...(wakeEnabled ? styles.headerIconButtonActive : {}),
                 }}
-                aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey simon")'}
+                aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey mona")'}
                 aria-pressed={wakeEnabled}
-                title={wakeEnabled ? 'Wake word ON — say "hey simon"' : 'Enable wake word ("hey simon")'}
+                title={wakeEnabled ? 'Wake word ON — say "hey mona"' : 'Enable wake word ("hey mona")'}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="3" />
