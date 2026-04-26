@@ -4,6 +4,44 @@ import {Environment, PerspectiveCamera, Stars, useGLTF, useTexture} from '@react
 import * as THREE from 'three';
 import type {MouthShape} from './lipSync';
 
+// Inlined version of three/examples/jsm/utils/SkeletonUtils.clone(). Uses our
+// deduped `three` instance — importing from the examples path pulls in a 2nd
+// copy of three.js (Vite's dedupe doesn't reach the examples/jsm subtree),
+// which silently breaks rendering of the cloned scene.
+function parallelTraverse(
+  a: THREE.Object3D,
+  b: THREE.Object3D,
+  cb: (x: THREE.Object3D, y: THREE.Object3D) => void,
+) {
+  cb(a, b);
+  for (let i = 0; i < a.children.length; i++) {
+    parallelTraverse(a.children[i], b.children[i], cb);
+  }
+}
+
+function cloneSkeleton(source: THREE.Object3D): THREE.Object3D {
+  const sourceLookup = new Map<THREE.Object3D, THREE.Object3D>();
+  const cloneLookup = new Map<THREE.Object3D, THREE.Object3D>();
+  const clone = source.clone();
+  parallelTraverse(source, clone, (s, c) => {
+    sourceLookup.set(c, s);
+    cloneLookup.set(s, c);
+  });
+  clone.traverse((node) => {
+    const skinned = node as THREE.SkinnedMesh;
+    if (!skinned.isSkinnedMesh) return;
+    const sourceMesh = sourceLookup.get(node) as THREE.SkinnedMesh;
+    const sourceSkeleton = sourceMesh.skeleton;
+    skinned.skeleton = sourceSkeleton.clone();
+    skinned.bindMatrix.copy(sourceMesh.bindMatrix);
+    skinned.skeleton.bones = sourceSkeleton.bones.map(
+      (b) => cloneLookup.get(b) as THREE.Bone,
+    );
+    skinned.bind(skinned.skeleton, skinned.bindMatrix);
+  });
+  return clone;
+}
+
 // Matches `base: '/remotion'` in vite.config.ts.
 const AVATAR_URL = '/remotion/avatar.glb';
 const BACKGROUND_URL = '/remotion/background.webp';
@@ -209,35 +247,12 @@ function ImageBackdrop() {
 }
 
 function SpaceBackground() {
-  const nebulaRef = useRef<THREE.Group>(null);
-
-  // Shooting stars handled by ShootingStar components
-  useFrame((_, delta) => {
-    if (nebulaRef.current) nebulaRef.current.rotation.z += delta * 0.01;
-  });
-
   return (
     <>
       <ImageBackdrop />
 
       {/* Starfield (expanded so it fills the frustum) */}
       <Stars radius={200} depth={140} count={4000} factor={4} saturation={0.15} fade speed={0.4} />
-
-      {/* Nebula clouds (pushed further back + larger) */}
-      <group ref={nebulaRef}>
-        <mesh position={[-6, 4, -40]}>
-          <sphereGeometry args={[10, 24, 24]} />
-          <meshBasicMaterial color="#2a0845" transparent opacity={0.12} depthWrite={false} toneMapped={false} />
-        </mesh>
-        <mesh position={[7, -3, -44]}>
-          <sphereGeometry args={[12, 24, 24]} />
-          <meshBasicMaterial color="#0a1545" transparent opacity={0.14} depthWrite={false} toneMapped={false} />
-        </mesh>
-        <mesh position={[3, 5, -48]}>
-          <sphereGeometry args={[8, 20, 20]} />
-          <meshBasicMaterial color="#301520" transparent opacity={0.09} depthWrite={false} toneMapped={false} />
-        </mesh>
-      </group>
 
       {/* Shooting stars + meteors */}
       <ShootingStar />
@@ -273,10 +288,119 @@ const VISEME_FOR_SHAPE: Record<MouthShape, string> = {
 
 const ALL_VISEMES = Array.from(new Set(Object.values(VISEME_FOR_SHAPE)));
 
+// Reused per frame in the arm-bone loop to avoid allocation churn.
+const _armEuler = new THREE.Euler();
+const _armOffset = new THREE.Quaternion();
+const _gestureEuler = new THREE.Euler();
+const _gestureOffset = new THREE.Quaternion();
+const _idleQuat = new THREE.Quaternion();
+const _targetQuat = new THREE.Quaternion();
+const _parentWorldQuat = new THREE.Quaternion();
+const _vecAlong = new THREE.Vector3();
+const _vecTarget = new THREE.Vector3();
+
+// Wave-gesture targets in WORLD space. aimBoneAtWorldDir bypasses bone-axis
+// quirks of the rig — point each bone's "along" direction at these vectors.
+const WAVE_RIGHT_ARM_DIR = new THREE.Vector3(-0.55, 0.15, 0.85).normalize(); // forward + side so hand is beside the face
+const WAVE_RIGHT_FOREARM_DIR = new THREE.Vector3(0, 1, 0); // straight up (forms the L)
+
+function aimBoneAtWorldDir(bone: THREE.Object3D, worldDir: THREE.Vector3, outQuat: THREE.Quaternion) {
+  let child: THREE.Object3D | undefined;
+  for (const c of bone.children) {
+    if ((c as THREE.Bone).isBone) {
+      child = c;
+      break;
+    }
+  }
+  if (!child) {
+    outQuat.identity();
+    return;
+  }
+  _vecAlong.copy(child.position).normalize();
+  if (bone.parent) {
+    bone.parent.getWorldQuaternion(_parentWorldQuat);
+    _parentWorldQuat.invert();
+  } else {
+    _parentWorldQuat.identity();
+  }
+  _vecTarget.copy(worldDir).applyQuaternion(_parentWorldQuat).normalize();
+  outQuat.setFromUnitVectors(_vecAlong, _vecTarget);
+}
+
+function smoothstep(t: number): number {
+  const c = Math.min(Math.max(t, 0), 1);
+  return c * c * (3 - 2 * c);
+}
+
+// Trapezoid envelope: rises slowly (first 35%), holds, then falls in the
+// last 25%. Asymmetric because raising a real arm takes longer than dropping
+// it — and a fast raise reads as cartoonish.
+function envHold(progress: number): number {
+  if (progress < 0.35) return smoothstep(progress / 0.35);
+  if (progress > 0.75) return smoothstep((1 - progress) / 0.25);
+  return 1;
+}
+
+// Per-bone Euler offset for the active gesture, given progress 0..1.
+// Sign conventions assume an RPM/Wolf3D rig in T-pose-ish bind. Sin/cos
+// envelopes give a smooth rise–hold–fall over the gesture's duration.
+function fillGestureEuler(
+  boneName: string,
+  type: 'wave' | 'stretch',
+  progress: number,
+  out: THREE.Euler,
+) {
+  out.set(0, 0, 0);
+  const env = Math.sin(progress * Math.PI); // 0 → 1 → 0
+  // Wave is handled via aimBoneAtWorldDir in useFrame (world-space targets).
+  void env;
+  if (type === 'wave') return; else if (type === 'stretch') {
+    // Both arms raise outward to the sides, slight elbow bend, then lower.
+    if (boneName === 'LeftArm') {
+      out.z = env * 1.1;
+      out.x = env * -0.2;
+    } else if (boneName === 'RightArm') {
+      out.z = env * -1.1;
+      out.x = env * -0.2;
+    } else if (boneName === 'LeftForeArm' || boneName === 'RightForeArm') {
+      out.y = env * 0.3;
+    } else if (boneName === 'LeftShoulder') {
+      out.z = env * 0.15;
+    } else if (boneName === 'RightShoulder') {
+      out.z = env * -0.15;
+    }
+  }
+}
+
 function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; breatheY: number; isSpeaking: boolean}) {
   const groupRef = useRef<THREE.Group>(null);
   const idleRef = useRef(0);
   const [avatarScale, setAvatarScale] = useState(1);
+
+  // Procedural-sway shader uniforms for the hair material. The mesh has no
+  // hair bones or morph targets, so we patch its vertex shader to add a
+  // small wind-driven displacement that scales with height above the scalp.
+  const hairUniformsRef = useRef<{uTime: {value: number}; uWindStrength: {value: number}} | null>(null);
+
+  // Idle arm-bone offsets. Each bone gets sine-driven micro-rotations on top
+  // of its bind-pose rotation so the avatar's arms shift slightly instead of
+  // sitting frozen at her sides.
+  const armBonesRef = useRef<{
+    bone: THREE.Object3D;
+    base: THREE.Quaternion;
+    freq: number;
+    phase: number;
+    amp: number;
+  }[]>([]);
+
+  // Layered gesture state — periodic wave / stretch on top of idle motion.
+  const gestureRef = useRef({
+    active: false,
+    type: 'wave' as 'wave' | 'stretch',
+    progress: 0,
+    duration: 3,
+    nextIn: 8 + Math.random() * 12, // first one within 8–20s of mount
+  });
 
   // Blink state machine — ported from the previous primitive-head version.
   const blinkRef = useRef({
@@ -289,9 +413,12 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
   const {scene} = useGLTF(AVATAR_URL);
 
   // Re-root the cloned GLB under a plain Group so transforms apply normally
-  // when this asset is mounted inside the scene graph.
+  // when this asset is mounted inside the scene graph. SkeletonUtils.clone
+  // properly rebinds each SkinnedMesh's skeleton to the *cloned* bones —
+  // the default Object3D.clone(true) leaves them pointing at the originals,
+  // which silently breaks any bone-rotation animation we apply.
   const sceneClone = useMemo(() => {
-    const clone = scene.clone(true);
+    const clone = cloneSkeleton(scene) as THREE.Object3D;
     const root = new THREE.Group();
     while (clone.children.length > 0) {
       root.add(clone.children[0]);
@@ -309,6 +436,90 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
 
     setAvatarScale(size.y > 0 ? targetHeight / size.y : 1);
   }, [sceneClone]);
+
+  // Patch the hair material with a procedural sway. Hair has no bones or
+  // morph targets, so we displace vertices in the vertex shader by a wave
+  // scaled by height above ~the scalp line — tips move, roots don't.
+  useEffect(() => {
+    const hair = sceneClone.getObjectByName('Wolf3D_Hair') as THREE.SkinnedMesh | undefined;
+    if (!hair) return;
+
+    const original = hair.material as THREE.Material;
+    const mat = (Array.isArray(original) ? original[0] : original).clone() as THREE.MeshStandardMaterial;
+    hair.material = mat;
+
+    const uniforms = {uTime: {value: 0}, uWindStrength: {value: 0.05}};
+    hairUniformsRef.current = uniforms;
+
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = uniforms.uTime;
+      shader.uniforms.uWindStrength = uniforms.uWindStrength;
+      shader.vertexShader =
+        'uniform float uTime;\nuniform float uWindStrength;\n' +
+        shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+           // Local-space y of the avatar's head is ~1.65–1.95 in the GLB's
+           // bind pose; clamp so vertices below the forehead don't move.
+           float heightAboveScalp = max(position.y - 1.65, 0.0);
+           float wave = sin(uTime * 1.2 + position.y * 4.0 + position.x * 2.5)
+                      * cos(uTime * 0.7 + position.z * 3.0);
+           transformed.x += wave * uWindStrength * heightAboveScalp;
+           transformed.z += wave * 0.3 * uWindStrength * heightAboveScalp;`,
+        );
+    };
+    mat.needsUpdate = true;
+  }, [sceneClone]);
+
+  // Cache arm-chain bones + their bind rotations on load. We add small
+  // offsets every frame on top of `base`, never overwriting the bind pose.
+  useEffect(() => {
+    const cfg: {name: string; amp: number; freq: number}[] = [
+      {name: 'LeftShoulder', amp: 0.025, freq: 0.45},
+      {name: 'RightShoulder', amp: 0.025, freq: 0.50},
+      {name: 'LeftArm', amp: 0.04, freq: 0.40},
+      {name: 'RightArm', amp: 0.04, freq: 0.42},
+      {name: 'LeftForeArm', amp: 0.06, freq: 0.55},
+      {name: 'RightForeArm', amp: 0.06, freq: 0.58},
+      {name: 'LeftHand', amp: 0.08, freq: 0.70},
+      {name: 'RightHand', amp: 0.08, freq: 0.72},
+    ];
+    const list: typeof armBonesRef.current = [];
+    const missing: string[] = [];
+    for (const c of cfg) {
+      const bone = sceneClone.getObjectByName(c.name);
+      if (bone) {
+        list.push({
+          bone,
+          base: bone.quaternion.clone(),
+          freq: c.freq,
+          phase: Math.random() * Math.PI * 2,
+          amp: c.amp,
+        });
+      } else {
+        missing.push(c.name);
+      }
+    }
+    console.log('[Avatar3D] arm bones found:', list.map((b) => b.bone.name));
+    if (missing.length) console.warn('[Avatar3D] arm bones NOT found in GLB:', missing);
+    armBonesRef.current = list;
+  }, [sceneClone]);
+
+  // Press 'g' to fire a gesture immediately (debug aid).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'g' || e.key === 'G') {
+        const g = gestureRef.current;
+        g.active = true;
+        g.progress = 0;
+        g.duration = 5;
+        g.type = e.shiftKey ? 'stretch' : 'wave';
+        console.log('[Avatar3D] manually triggered gesture:', g.type);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Collect every skinned mesh that has morph targets so we can drive them in lockstep.
   const morphMeshes = useMemo(() => {
@@ -367,6 +578,68 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
     groupRef.current.rotation.y = Math.sin(idleRef.current * 0.5) * 0.04;
     groupRef.current.rotation.x = Math.sin(idleRef.current * 0.3) * 0.015;
 
+    // Drive the hair-sway shader uniform.
+    if (hairUniformsRef.current) {
+      hairUniformsRef.current.uTime.value += delta;
+    }
+
+    // Periodic gesture scheduler.
+    const g = gestureRef.current;
+    if (g.active) {
+      g.progress += delta / g.duration;
+      if (g.progress >= 1) {
+        g.active = false;
+        g.progress = 0;
+        g.nextIn = 15 + Math.random() * 25; // next gesture in 15–40s
+      }
+    } else {
+      g.nextIn -= delta;
+      if (g.nextIn <= 0) {
+        g.active = true;
+        g.progress = 0;
+        g.duration = 4.5 + Math.random() * 2; // 4.5–6.5s — slower, more natural
+        g.type = Math.random() < 0.5 ? 'wave' : 'stretch';
+        console.log('[Avatar3D] gesture firing:', g.type, 'duration', g.duration.toFixed(1) + 's');
+      }
+    }
+
+    // Idle arm motion + (optional) layered gesture, all on top of bind pose.
+    const t = idleRef.current;
+    for (const arm of armBonesRef.current) {
+      const phase = t * arm.freq + arm.phase;
+      _armEuler.set(
+        Math.sin(phase) * arm.amp,
+        Math.sin(phase * 1.3) * arm.amp * 0.5,
+        Math.cos(phase * 0.7) * arm.amp,
+      );
+      _armOffset.setFromEuler(_armEuler);
+      arm.bone.quaternion.copy(arm.base).multiply(_armOffset);
+
+      if (!g.active) continue;
+
+      if (g.type === 'wave') {
+        const hold = envHold(g.progress);
+        if (hold <= 0.001) continue;
+        if (arm.bone.name === 'RightArm') {
+          _idleQuat.copy(arm.bone.quaternion);
+          aimBoneAtWorldDir(arm.bone, WAVE_RIGHT_ARM_DIR, _targetQuat);
+          arm.bone.quaternion.slerpQuaternions(_idleQuat, _targetQuat, hold);
+        } else if (arm.bone.name === 'RightForeArm') {
+          _idleQuat.copy(arm.bone.quaternion);
+          aimBoneAtWorldDir(arm.bone, WAVE_RIGHT_FOREARM_DIR, _targetQuat);
+          arm.bone.quaternion.slerpQuaternions(_idleQuat, _targetQuat, hold);
+        } else if (arm.bone.name === 'RightShoulder') {
+          _gestureEuler.set(hold * -0.1, 0, 0);
+          _gestureOffset.setFromEuler(_gestureEuler);
+          arm.bone.quaternion.multiply(_gestureOffset);
+        }
+      } else {
+        fillGestureEuler(arm.bone.name, g.type, g.progress, _gestureEuler);
+        _gestureOffset.setFromEuler(_gestureEuler);
+        arm.bone.quaternion.multiply(_gestureOffset);
+      }
+    }
+
     // Blink state machine.
     const b = blinkRef.current;
     b.timer += delta;
@@ -410,10 +683,10 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
   return (
     <group
       ref={groupRef}
-      position={[0, breatheY * 0.01, 0]}
+      position={[0, 0, 0]}
       scale={1}
     >
-      <primitive object={sceneClone} position={[0, -180, 0]} scale={avatarScale} />
+      <primitive object={sceneClone} position={[0, -0.5, 0]} scale={avatarScale} />
     </group>
   );
 }
