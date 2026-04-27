@@ -694,12 +694,13 @@ const toggleFullscreen = useCallback(() => {
             </div>
           )}
 
-          {/* Show-chat button — reloads the page so chat is always visible on load */}
+          {/* Show-chat button */}
           {!isChatVisible && (
             <button
               onClick={() => {
-                if (isMobile) { setMobileSheetOpen(true); setIsChatVisible(true); }
-                else { window.location.reload(); }
+                chatShownAtRef.current = Date.now();
+                if (isMobile) { setMobileSheetOpen(true); }
+                setIsChatVisible(true);
               }}
               style={styles.showChatButton}
               aria-label="Show chat panel"
