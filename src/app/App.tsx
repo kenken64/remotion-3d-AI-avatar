@@ -7,23 +7,21 @@ import type {MouthShape} from '../lipSync';
 
 const MOBILE_BREAKPOINT = 768;
 
-const useIsMobile = (): boolean => {
+const useMediaQuery = (query: string): boolean => {
   const getMatch = () => {
     if (typeof window === 'undefined') return false;
     try {
-      const m = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
-      return m.matches;
+      return window.matchMedia(query).matches;
     } catch {
-      return window.innerWidth < MOBILE_BREAKPOINT;
+      return false;
     }
   };
 
-  const [isMobile, setIsMobile] = useState(getMatch);
+  const [matches, setMatches] = useState(getMatch);
 
   useEffect(() => {
-    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
-    const onChange = (e: MediaQueryListEvent | MediaQueryList) => setIsMobile('matches' in e ? e.matches : mql.matches);
-    // Attach listener with fallback for older browsers
+    const mql = window.matchMedia(query);
+    const onChange = (e: MediaQueryListEvent | MediaQueryList) => setMatches('matches' in e ? e.matches : mql.matches);
     if (typeof mql.addEventListener === 'function') {
       mql.addEventListener('change', onChange as any);
       return () => mql.removeEventListener('change', onChange as any);
@@ -32,10 +30,13 @@ const useIsMobile = (): boolean => {
     mql.addListener(onChange as any);
     // @ts-ignore fallback cleanup
     return () => mql.removeListener(onChange as any);
-  }, []);
+  }, [query]);
 
-  return isMobile;
+  return matches;
 };
+
+const useIsMobile = (): boolean => useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
+const useIsPortrait = (): boolean => useMediaQuery('(orientation: portrait)');
 
 interface ChatMessage {
   id: number;
@@ -88,7 +89,8 @@ export const App: React.FC = () => {
     useAudioLipSync();
 
   const isMobile = useIsMobile();
-  const styles = useMemo(() => buildStyles(isMobile), [isMobile]);
+  const isPortrait = useIsPortrait();
+  const styles = useMemo(() => buildStyles(isMobile, isPortrait), [isMobile, isPortrait]);
 
   // keyboard shortcut to show chat if it was hidden (press 'c')
   useEffect(() => {
@@ -1339,13 +1341,46 @@ const toggleFullscreen = useCallback(() => {
   );
 };
 
-const buildStyles = (isMobile: boolean): Record<string, React.CSSProperties> => {
-  if (!isMobile) return baseStyles;
-  const merged: Record<string, React.CSSProperties> = {...baseStyles};
-  for (const key of Object.keys(mobileOverrides)) {
-    merged[key] = {...baseStyles[key], ...mobileOverrides[key]};
+const buildStyles = (isMobile: boolean, isPortrait: boolean): Record<string, React.CSSProperties> => {
+  if (isMobile) {
+    const merged: Record<string, React.CSSProperties> = {...baseStyles};
+    for (const key of Object.keys(mobileOverrides)) {
+      merged[key] = {...baseStyles[key], ...mobileOverrides[key]};
+    }
+    return merged;
   }
-  return merged;
+  if (isPortrait) {
+    const merged: Record<string, React.CSSProperties> = {...baseStyles};
+    for (const key of Object.keys(desktopPortraitOverrides)) {
+      merged[key] = {...baseStyles[key], ...desktopPortraitOverrides[key]};
+    }
+    return merged;
+  }
+  return baseStyles;
+};
+
+const desktopPortraitOverrides: Record<string, React.CSSProperties> = {
+  container: {
+    flexDirection: 'column',
+  },
+  avatarPanel: {
+    flex: '0 0 45dvh',
+    minHeight: '45dvh',
+    maxHeight: '45dvh',
+    width: '100%',
+  },
+  avatarPanelFull: {
+    flex: '1 1 auto',
+    width: '100%',
+  },
+  chatPanel: {
+    flex: '1 1 auto',
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    borderLeft: 'none',
+    borderTop: '1px solid rgba(255,255,255,0.06)',
+  },
 };
 
 const mobileOverrides: Record<string, React.CSSProperties> = {
