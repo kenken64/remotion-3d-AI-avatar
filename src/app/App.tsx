@@ -692,6 +692,45 @@ const toggleFullscreen = useCallback(() => {
                   transform: 'scaleX(-1)',
                 }}
               />
+              <button
+                onClick={captureAndIdentify}
+                disabled={isThinking || isSpeaking || isRecording || isTranscribing}
+                aria-label='Capture frame and ask "what do you see?"'
+                title='Capture frame and ask "what do you see?"'
+                style={{
+                  position: 'absolute',
+                  bottom: 8,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  width: 44,
+                  height: 44,
+                  borderRadius: 22,
+                  border: '3px solid rgba(255,255,255,0.9)',
+                  background: 'rgba(255,255,255,0.15)',
+                  backdropFilter: 'blur(8px)',
+                  cursor: (isThinking || isSpeaking || isRecording || isTranscribing) ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: 0,
+                  opacity: (isThinking || isSpeaking || isRecording || isTranscribing) ? 0.5 : 1,
+                  transition: 'opacity 0.2s, transform 0.1s',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+                }}
+                onMouseDown={(e) => { e.currentTarget.style.transform = 'translateX(-50%) scale(0.92)'; }}
+                onMouseUp={(e) => { e.currentTarget.style.transform = 'translateX(-50%) scale(1)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateX(-50%) scale(1)'; }}
+              >
+                <span
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 14,
+                    background: '#fff',
+                    display: 'block',
+                  }}
+                />
+              </button>
             </div>
           )}
 
