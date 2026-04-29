@@ -3,6 +3,7 @@ import {Avatar3D} from '../Avatar3D';
 import {useAudioLipSync} from './useAudioLipSync';
 import {sendChatMessage, fetchSpeechAudio, transcribeAudio, ChatMsg} from './api';
 import {AvatarIcon} from './AvatarIcon';
+import {MessageContent} from './MessageContent';
 import type {MouthShape} from '../lipSync';
 
 const MOBILE_BREAKPOINT = 768;
@@ -978,7 +979,7 @@ const toggleFullscreen = useCallback(() => {
                 {msg.sender === 'user' && (
                   <span style={styles.userMsgLabel}>You</span>
                 )}
-                <p style={styles.messageText}>{msg.text}</p>
+                <MessageContent text={msg.text} asMarkdown={msg.sender === 'avatar'} baseStyle={styles.messageText} />
                 {msg.imageUrl && (
                   <a href={msg.imageUrl} target="_blank" rel="noreferrer">
                     <img
@@ -1221,7 +1222,7 @@ const toggleFullscreen = useCallback(() => {
               {messages.map((msg) => (
                 <div key={msg.id} style={{...styles.messageBubble, ...(msg.sender === 'user' ? styles.userMessage : styles.avatarMessage)}}>
                   <div style={{...styles.messageContent, ...(msg.sender === 'user' ? styles.userContent : styles.avatarContent)}}>
-                    <p style={styles.messageText}>{msg.text}</p>
+                    <MessageContent text={msg.text} asMarkdown={msg.sender === 'avatar'} baseStyle={styles.messageText} />
                     {msg.imageUrl && (
                       <a href={msg.imageUrl} target="_blank" rel="noreferrer">
                         <img src={msg.imageUrl} alt="generated" style={{marginTop: 8, maxWidth: '100%', borderRadius: 12, display: 'block'}} />
@@ -1379,6 +1380,7 @@ const desktopPortraitOverrides: Record<string, React.CSSProperties> = {
     width: '100%',
     maxWidth: '100%',
     minWidth: 0,
+    minHeight: 0,
     borderLeft: 'none',
     borderTop: '1px solid rgba(255,255,255,0.06)',
   },
@@ -1688,9 +1690,9 @@ const baseStyles: Record<string, React.CSSProperties> = {
   },
   chatMessages: {
     flex: 1,
+    minHeight: 0,
     overflowY: 'auto',
     padding: '16px 14px',
-    paddingBottom: 120,
     boxSizing: 'border-box',
     display: 'flex',
     flexDirection: 'column',
