@@ -555,6 +555,9 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
 
   // Cache arm-chain bones + their bind rotations on load. We add small
   // offsets every frame on top of `base`, never overwriting the bind pose.
+  // Ready Player Me exports arms in T-pose (horizontal); we apply a one-time
+  // rest offset so the avatar starts with hands relaxed at her sides — idle
+  // sway and gestures then layer on top of that arms-down rest pose.
   useEffect(() => {
     const cfg: {name: string; amp: number; freq: number}[] = [
       {name: 'LeftShoulder', amp: 0.025, freq: 0.45},
@@ -566,11 +569,28 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
       {name: 'LeftHand', amp: 0.08, freq: 0.70},
       {name: 'RightHand', amp: 0.08, freq: 0.72},
     ];
+    // Per-bone Euler offsets (radians) applied once at bind to bring the
+    // T-pose into a relaxed arms-at-sides rest pose. Tune if your rig has
+    // different axis conventions — start by flipping the Z signs.
+    // T-pose bind: rotate around the bone's local X axis to swing arms down.
+    // (Z swings forward/backward on this rig, not vertical, so it's wrong here.)
+    const REST_POSE: Record<string, [number, number, number]> = {
+      LeftArm: [1.3, 0, 0],
+      RightArm: [1.3, 0, 0],
+    };
+    const _restEuler = new THREE.Euler();
+    const _restQuat = new THREE.Quaternion();
     const list: typeof armBonesRef.current = [];
     const missing: string[] = [];
     for (const c of cfg) {
       const bone = sceneClone.getObjectByName(c.name);
       if (bone) {
+        const rest = REST_POSE[c.name];
+        if (rest) {
+          _restEuler.set(rest[0], rest[1], rest[2]);
+          _restQuat.setFromEuler(_restEuler);
+          bone.quaternion.multiply(_restQuat);
+        }
         list.push({
           bone,
           base: bone.quaternion.clone(),
