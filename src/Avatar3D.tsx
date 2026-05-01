@@ -274,6 +274,25 @@ function SpaceBackground() {
 // ========== Realistic GLB-driven avatar ==========
 
 // Map our viseme enum onto the Oculus visemes baked into the GLB.
+// Fallback for rigs with only ARKit blendshapes. The Avaturn rig's jawOpen
+// and cheekPuff morphs are crudely authored — they displace the entire head
+// from chin to forehead — so we avoid them entirely. mouthSmileLeft/Right
+// and mouthFrown ARE cleanly localized to the lip region, so we drive only
+// those. This means the jaw won't drop visibly, but the lip corners will
+// shape distinct phonemes and the rest of the face stays still.
+type ARKitMouthPose = {jaw: number; smile: number; frown: number; cheek: number};
+const ARKIT_FALLBACK_FOR_SHAPE: Record<MouthShape, ARKitMouthPose> = {
+  closed: {jaw: 0.0, smile: 0.0,  frown: 0.0,  cheek: 0.0},
+  A: {jaw: 0.0, smile: 0.20, frown: 0.0,  cheek: 0.0}, // "ah" — corners back, lips parted
+  E: {jaw: 0.0, smile: 0.50, frown: 0.0,  cheek: 0.0}, // "eh" — wider spread
+  I: {jaw: 0.0, smile: 0.85, frown: 0.0,  cheek: 0.0}, // "ee" — widest spread
+  O: {jaw: 0.0, smile: 0.0,  frown: 0.55, cheek: 0.0}, // "oh" — rounded
+  U: {jaw: 0.0, smile: 0.0,  frown: 0.80, cheek: 0.0}, // "oo" — most rounded
+  F: {jaw: 0.0, smile: 0.0,  frown: 0.30, cheek: 0.0}, // labiodental
+  L: {jaw: 0.0, smile: 0.20, frown: 0.0,  cheek: 0.0}, // alveolar
+  M: {jaw: 0.0, smile: 0.0,  frown: 0.30, cheek: 0.0}, // closed bilabial
+};
+
 const VISEME_FOR_SHAPE: Record<MouthShape, string> = {
   A: 'viseme_aa',
   E: 'viseme_E',
@@ -673,31 +692,66 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
     const w: Record<string, number> = {};
     for (const v of ALL_VISEMES) w[v] = 0;
     const active = VISEME_FOR_SHAPE[shape] ?? 'viseme_sil';
+    const usePhonemes = hasPhonemeVisemesRef.current;
     if (speaking) {
-      w[active] = 1;
-      w.mouthSmile = 0;
+      if (usePhonemes) {
+        // Proper phoneme lipsync via Oculus visemes.
+        w[active] = 1;
+        w.mouthSmile = 0;
+      } else {
+        // ARKit fallback — combine multiple blendshapes per phoneme.
+        const p = ARKIT_FALLBACK_FOR_SHAPE[shape] ?? ARKIT_FALLBACK_FOR_SHAPE.A;
+        w.jawOpen = p.jaw;
+        w.mouthSmileLeft = p.smile;
+        w.mouthSmileRight = p.smile;
+        w.mouthFrown = p.frown;
+        w.cheekPuff = p.cheek;
+      }
     } else {
-      w.viseme_sil = 1;
-      w.mouthSmile = 0.25; // gentle resting smile
+      if (usePhonemes) {
+        w.viseme_sil = 1;
+        w.mouthSmile = 0.25; // gentle resting smile
+      } else {
+        w.jawOpen = 0;
+        w.mouthSmileLeft = 0.18;
+        w.mouthSmileRight = 0.18;
+        w.mouthFrown = 0;
+        w.cheekPuff = 0;
+      }
     }
     w.eyeBlinkLeft = blinkAmount;
     w.eyeBlinkRight = blinkAmount;
     return w;
   };
 
+  // True iff the rig has the Oculus phoneme visemes (proper lipsync). When
+  // false, computeTargetWeights falls back to ARKit jawOpen so the mouth at
+  // least animates on rigs that ship only ARKit blendshapes.
+  const hasPhonemeVisemesRef = useRef(false);
+
   // Surface what morphs are actually present once, for sanity-checking.
   useEffect(() => {
     if (morphMeshes.length === 0) {
       console.warn('[Avatar3D] GLB has no morph targets — face animation will not work.');
+      hasPhonemeVisemesRef.current = false;
       return;
     }
-    const sample = morphMeshes[0];
-    const dict = sample.morphTargetDictionary!;
+    // Visemes/blink may live on different meshes than the first one (Avaturn
+    // puts visemes on Head_Mesh and blinks on Eye_Mesh), so union the dicts.
+    const allMorphs = new Set<string>();
+    for (const m of morphMeshes) {
+      for (const n in m.morphTargetDictionary!) allMorphs.add(n);
+    }
     const missing = ALL_VISEMES.concat(['eyeBlinkLeft', 'eyeBlinkRight']).filter(
-      (n) => !(n in dict),
+      (n) => !allMorphs.has(n),
     );
+    // Need at least the core vowel visemes to count as phoneme-capable.
+    hasPhonemeVisemesRef.current = ['viseme_aa', 'viseme_E', 'viseme_O'].every((v) => allMorphs.has(v));
     if (missing.length) {
       console.warn('[Avatar3D] GLB is missing expected morph targets:', missing);
+    }
+    if (!hasPhonemeVisemesRef.current) {
+      console.warn('[Avatar3D] No Oculus phoneme visemes — falling back to jawOpen for lipsync.');
     }
   }, [morphMeshes]);
 
