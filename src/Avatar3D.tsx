@@ -1,6 +1,6 @@
-import React, {useRef, useMemo, useEffect, useState} from 'react';
+import React, {useRef, useMemo, useEffect, useState, Suspense} from 'react';
 import {Canvas, useFrame} from '@react-three/fiber';
-import {Environment, PerspectiveCamera, Stars, useGLTF, useTexture} from '@react-three/drei';
+import {Environment, PerspectiveCamera, Stars, useGLTF, useTexture, Html, useProgress} from '@react-three/drei';
 import * as THREE from 'three';
 import type {MouthShape} from './lipSync';
 
@@ -293,6 +293,7 @@ const _armEuler = new THREE.Euler();
 const _armOffset = new THREE.Quaternion();
 const _gestureEuler = new THREE.Euler();
 const _gestureOffset = new THREE.Quaternion();
+const _groupGestureEuler = new THREE.Euler();
 const _idleQuat = new THREE.Quaternion();
 const _targetQuat = new THREE.Quaternion();
 const _parentWorldQuat = new THREE.Quaternion();
@@ -341,35 +342,108 @@ function envHold(progress: number): number {
   return 1;
 }
 
+// Gesture identifiers. Wave uses world-space arm aiming; everything else is
+// handled via per-bone Euler offsets in fillGestureEuler / fillGestureGroup.
+type GestureType =
+  | 'wave'
+  | 'stretch'
+  | 'cheer'
+  | 'shrug'
+  | 'akimbo'
+  | 'point'
+  | 'clap'
+  | 'bow'
+  | 'nod'
+  | 'spin';
+
 // Per-bone Euler offset for the active gesture, given progress 0..1.
 // Sign conventions assume an RPM/Wolf3D rig in T-pose-ish bind. Sin/cos
 // envelopes give a smooth rise–hold–fall over the gesture's duration.
 function fillGestureEuler(
   boneName: string,
-  type: 'wave' | 'stretch',
+  type: GestureType,
   progress: number,
   out: THREE.Euler,
 ) {
   out.set(0, 0, 0);
   const env = Math.sin(progress * Math.PI); // 0 → 1 → 0
   // Wave is handled via aimBoneAtWorldDir in useFrame (world-space targets).
-  void env;
-  if (type === 'wave') return; else if (type === 'stretch') {
+  if (type === 'wave') return;
+  if (type === 'stretch') {
     // Both arms raise outward to the sides, slight elbow bend, then lower.
-    if (boneName === 'LeftArm') {
-      out.z = env * 1.1;
-      out.x = env * -0.2;
-    } else if (boneName === 'RightArm') {
-      out.z = env * -1.1;
-      out.x = env * -0.2;
-    } else if (boneName === 'LeftForeArm' || boneName === 'RightForeArm') {
-      out.y = env * 0.3;
-    } else if (boneName === 'LeftShoulder') {
-      out.z = env * 0.15;
-    } else if (boneName === 'RightShoulder') {
-      out.z = env * -0.15;
-    }
+    if (boneName === 'LeftArm') { out.z = env * 1.1; out.x = env * -0.2; }
+    else if (boneName === 'RightArm') { out.z = env * -1.1; out.x = env * -0.2; }
+    else if (boneName === 'LeftForeArm' || boneName === 'RightForeArm') { out.y = env * 0.3; }
+    else if (boneName === 'LeftShoulder') { out.z = env * 0.15; }
+    else if (boneName === 'RightShoulder') { out.z = env * -0.15; }
+  } else if (type === 'cheer') {
+    // Both arms shoot straight up — V-shape — slight forward lean of forearms.
+    if (boneName === 'LeftArm') { out.z = env * 2.4; out.x = env * -0.15; }
+    else if (boneName === 'RightArm') { out.z = env * -2.4; out.x = env * -0.15; }
+    else if (boneName === 'LeftForeArm' || boneName === 'RightForeArm') { out.y = env * 0.25; }
+    else if (boneName === 'LeftShoulder') { out.z = env * 0.25; }
+    else if (boneName === 'RightShoulder') { out.z = env * -0.25; }
+  } else if (type === 'shrug') {
+    // Shoulders raised, forearms angled outward, palms-up vibe.
+    if (boneName === 'LeftArm') { out.z = env * 0.4; out.x = env * -0.1; }
+    else if (boneName === 'RightArm') { out.z = env * -0.4; out.x = env * -0.1; }
+    else if (boneName === 'LeftShoulder') { out.z = env * 0.4; }
+    else if (boneName === 'RightShoulder') { out.z = env * -0.4; }
+    else if (boneName === 'LeftForeArm') { out.x = env * -0.6; out.z = env * -0.5; }
+    else if (boneName === 'RightForeArm') { out.x = env * -0.6; out.z = env * 0.5; }
+  } else if (type === 'akimbo') {
+    // Hands on hips: arms slightly out, forearms folded back toward the waist.
+    if (boneName === 'LeftArm') { out.z = env * 0.5; out.x = env * 0.15; }
+    else if (boneName === 'RightArm') { out.z = env * -0.5; out.x = env * 0.15; }
+    else if (boneName === 'LeftForeArm') { out.x = env * -1.4; out.z = env * -0.6; }
+    else if (boneName === 'RightForeArm') { out.x = env * -1.4; out.z = env * 0.6; }
+  } else if (type === 'point') {
+    // Right arm extended forward. Left stays at side.
+    if (boneName === 'RightArm') { out.x = env * -1.45; out.z = env * -0.25; }
+    else if (boneName === 'RightForeArm') { out.y = env * 0.2; }
+    else if (boneName === 'RightShoulder') { out.x = env * -0.1; }
+  } else if (type === 'clap') {
+    // Both arms forward, hands oscillating together (6 claps over the gesture).
+    const osc = (Math.sin(progress * Math.PI * 12) + 1) * 0.5; // 0..1, 6 cycles
+    if (boneName === 'LeftArm') { out.x = env * -1.25; out.z = env * (0.45 + osc * 0.25); }
+    else if (boneName === 'RightArm') { out.x = env * -1.25; out.z = env * -(0.45 + osc * 0.25); }
+    else if (boneName === 'LeftForeArm') { out.x = env * -0.5; out.y = env * 0.3; }
+    else if (boneName === 'RightForeArm') { out.x = env * -0.5; out.y = env * -0.3; }
+  } else if (type === 'spin') {
+    // Pirouette balance pose — arms out to the sides, slight forward bend in
+    // forearms. Combined with the eased group rotation + bob in fillGestureGroup,
+    // this stops the spin from looking like a turntable.
+    if (boneName === 'LeftArm') { out.z = env * 0.95; out.x = env * -0.1; }
+    else if (boneName === 'RightArm') { out.z = env * -0.95; out.x = env * -0.1; }
+    else if (boneName === 'LeftForeArm') { out.x = env * -0.2; out.y = env * 0.25; }
+    else if (boneName === 'RightForeArm') { out.x = env * -0.2; out.y = env * -0.25; }
+    else if (boneName === 'LeftShoulder') { out.z = env * 0.12; }
+    else if (boneName === 'RightShoulder') { out.z = env * -0.12; }
   }
+  // bow / nod act on the spine/head bone in useFrame; spin's group rotation
+  // and bob are in fillGestureGroup + the spin position offset there.
+}
+
+// Whole-avatar Euler offset for gestures that rotate the body as a rigid
+// unit. Bow/nod aren't here because they need to bend at the spine/head
+// (legs planted); only spin pivots the entire group.
+function fillGestureGroup(type: GestureType, progress: number, out: THREE.Euler) {
+  out.set(0, 0, 0);
+  if (type === 'spin') {
+    // Cubic ease-in-out so the rotation accelerates and decelerates
+    // instead of looking like a turntable at constant rpm.
+    const eased =
+      progress < 0.5
+        ? 4 * progress * progress * progress
+        : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+    out.y = eased * Math.PI * 2; // one full revolution
+  }
+}
+
+// Vertical bob applied to the avatar group during spin — small up-and-down
+// motion makes the pirouette feel grounded and human, not turntable-static.
+function spinBobY(progress: number) {
+  return Math.sin(progress * Math.PI) * 0.06;
 }
 
 function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; breatheY: number; isSpeaking: boolean}) {
@@ -393,10 +467,18 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
     amp: number;
   }[]>([]);
 
-  // Layered gesture state — periodic wave / stretch on top of idle motion.
+  // Body bones used by gestures that bend the torso/head without moving the
+  // legs (bow, nod). We hold the bind-pose quaternion so each frame we can
+  // reset → optionally apply the gesture offset.
+  const spineBoneRef = useRef<{bone: THREE.Object3D; base: THREE.Quaternion} | null>(null);
+  const headBoneRef = useRef<{bone: THREE.Object3D; base: THREE.Quaternion} | null>(null);
+
+  // Layered gesture state — periodic gesture on top of idle motion. The
+  // auto-scheduler only picks from the calmer set (wave/stretch); the rest
+  // are reserved for keyboard triggers via 3-0.
   const gestureRef = useRef({
     active: false,
-    type: 'wave' as 'wave' | 'stretch',
+    type: 'wave' as GestureType,
     progress: 0,
     duration: 3,
     nextIn: 8 + Math.random() * 12, // first one within 8–20s of mount
@@ -503,19 +585,48 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
     console.log('[Avatar3D] arm bones found:', list.map((b) => b.bone.name));
     if (missing.length) console.warn('[Avatar3D] arm bones NOT found in GLB:', missing);
     armBonesRef.current = list;
+
+    // Spine + Head for bow/nod. Try a couple of common RPM/Mixamo names.
+    const spine =
+      sceneClone.getObjectByName('Spine') ||
+      sceneClone.getObjectByName('Spine1') ||
+      sceneClone.getObjectByName('mixamorigSpine');
+    const head =
+      sceneClone.getObjectByName('Head') ||
+      sceneClone.getObjectByName('mixamorigHead');
+    spineBoneRef.current = spine ? {bone: spine, base: spine.quaternion.clone()} : null;
+    headBoneRef.current = head ? {bone: head, base: head.quaternion.clone()} : null;
+    if (!spine) console.warn('[Avatar3D] Spine bone not found — bow gesture will be a no-op');
+    if (!head) console.warn('[Avatar3D] Head bone not found — nod gesture will be a no-op');
   }, [sceneClone]);
 
-  // Press 'g' to fire a gesture immediately (debug aid).
+  // Keyboard gestures: 1 wave · 2 stretch · 3 cheer · 4 shrug · 5 akimbo
+  //                    6 point · 7 clap · 8 bow · 9 nod · 0 spin
+  // Ignored while typing in chat inputs so digit keys don't double-fire.
   useEffect(() => {
+    const KEY_TO_GESTURE: Record<string, {type: GestureType; duration: number}> = {
+      '1': {type: 'wave', duration: 5},
+      '2': {type: 'stretch', duration: 5},
+      '3': {type: 'cheer', duration: 3.5},
+      '4': {type: 'shrug', duration: 2.8},
+      '5': {type: 'akimbo', duration: 4},
+      '6': {type: 'point', duration: 3.5},
+      '7': {type: 'clap', duration: 3.2},
+      '8': {type: 'bow', duration: 3},
+      '9': {type: 'nod', duration: 2.5},
+      '0': {type: 'spin', duration: 2.4},
+    };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'g' || e.key === 'G') {
-        const g = gestureRef.current;
-        g.active = true;
-        g.progress = 0;
-        g.duration = 5;
-        g.type = e.shiftKey ? 'stretch' : 'wave';
-        console.log('[Avatar3D] manually triggered gesture:', g.type);
-      }
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      const choice = KEY_TO_GESTURE[e.key];
+      if (!choice) return;
+      const g = gestureRef.current;
+      g.active = true;
+      g.progress = 0;
+      g.duration = choice.duration;
+      g.type = choice.type;
+      console.log('[Avatar3D] manually triggered gesture:', g.type);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -573,10 +684,26 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
   useFrame((_, delta) => {
     if (!groupRef.current) return;
 
-    // Idle motion + breathing — applied to the whole avatar group.
+    // Idle motion + breathing — applied to the whole avatar group. Group-level
+    // gestures (bow / nod / spin) layer on top via fillGestureGroup below.
     idleRef.current += delta;
-    groupRef.current.rotation.y = Math.sin(idleRef.current * 0.5) * 0.04;
-    groupRef.current.rotation.x = Math.sin(idleRef.current * 0.3) * 0.015;
+    let groupRotX = Math.sin(idleRef.current * 0.3) * 0.015;
+    let groupRotY = Math.sin(idleRef.current * 0.5) * 0.04;
+    let groupRotZ = 0;
+    if (gestureRef.current.active) {
+      fillGestureGroup(gestureRef.current.type, gestureRef.current.progress, _groupGestureEuler);
+      groupRotX += _groupGestureEuler.x;
+      groupRotY += _groupGestureEuler.y;
+      groupRotZ += _groupGestureEuler.z;
+    }
+    groupRef.current.rotation.x = groupRotX;
+    groupRef.current.rotation.y = groupRotY;
+    groupRef.current.rotation.z = groupRotZ;
+    // Vertical bob during spin — keeps the gesture from feeling turntable-y.
+    groupRef.current.position.y =
+      gestureRef.current.active && gestureRef.current.type === 'spin'
+        ? spinBobY(gestureRef.current.progress)
+        : 0;
 
     // Drive the hair-sway shader uniform.
     if (hairUniformsRef.current) {
@@ -640,6 +767,31 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
       }
     }
 
+    // Bow / nod — bend at the spine or head, leaving legs and hips planted.
+    // Always reset to bind pose first; only layer the gesture offset when
+    // the matching gesture is active.
+    const sb = spineBoneRef.current;
+    if (sb) {
+      sb.bone.quaternion.copy(sb.base);
+      if (g.active && g.type === 'bow') {
+        const env = Math.sin(g.progress * Math.PI);
+        _gestureEuler.set(env * 0.55, 0, 0);
+        _gestureOffset.setFromEuler(_gestureEuler);
+        sb.bone.quaternion.multiply(_gestureOffset);
+      }
+    }
+    const hb = headBoneRef.current;
+    if (hb) {
+      hb.bone.quaternion.copy(hb.base);
+      if (g.active && g.type === 'nod') {
+        const env = Math.sin(g.progress * Math.PI);
+        const nodAngle = env * Math.sin(g.progress * Math.PI * 8) * 0.32;
+        _gestureEuler.set(nodAngle, 0, 0);
+        _gestureOffset.setFromEuler(_gestureEuler);
+        hb.bone.quaternion.multiply(_gestureOffset);
+      }
+    }
+
     // Blink state machine.
     const b = blinkRef.current;
     b.timer += delta;
@@ -688,6 +840,55 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
     >
       <primitive object={sceneClone} position={[0, -0.5, 0]} scale={avatarScale} />
     </group>
+  );
+}
+
+// Suspense fallback for GLB load — shows a centered card with progress.
+// Rendered inside the Canvas via drei's <Html>, so it lives in the same
+// pixel space as the avatar will once it finishes loading.
+function AvatarLoader() {
+  const {progress} = useProgress();
+  const pct = Math.max(0, Math.min(100, Math.round(progress)));
+  return (
+    <Html center>
+      <div
+        style={{
+          color: '#e5e7eb',
+          fontSize: 13,
+          fontFamily: 'system-ui, sans-serif',
+          background: 'rgba(0,0,0,0.55)',
+          padding: '12px 18px',
+          borderRadius: 14,
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          textAlign: 'center',
+          whiteSpace: 'nowrap',
+          minWidth: 160,
+        }}
+      >
+        <div style={{fontWeight: 600, marginBottom: 8}}>Loading Mona…</div>
+        <div
+          style={{
+            width: '100%',
+            height: 4,
+            background: 'rgba(255,255,255,0.1)',
+            borderRadius: 2,
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              width: `${pct}%`,
+              height: '100%',
+              background: '#7c3aed',
+              transition: 'width 0.2s ease-out',
+            }}
+          />
+        </div>
+        <div style={{fontSize: 11, opacity: 0.6, marginTop: 6}}>{pct}%</div>
+      </div>
+    </Html>
   );
 }
 
@@ -754,7 +955,9 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeak
 
       <Environment preset="studio" />
 
-      <GLBAvatar mouthShape={mouthShape} breatheY={breatheY} isSpeaking={isSpeaking} />
+      <Suspense fallback={<AvatarLoader />}>
+        <GLBAvatar mouthShape={mouthShape} breatheY={breatheY} isSpeaking={isSpeaking} />
+      </Suspense>
     </Canvas>
   );
 };
