@@ -46,6 +46,7 @@ interface ChatMessage {
   timestamp: Date;
   audioUrl?: string; // object URL for TTS audio replay
   imageUrl?: string; // generated image URL (e.g. DALL-E)
+  translation?: string; // cached translation (auto-detected direction)
 }
 
 export const App: React.FC = () => {
@@ -72,10 +73,22 @@ export const App: React.FC = () => {
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const [wakeEnabled, setWakeEnabled] = useState(false);
   const [webcamEnabled, setWebcamEnabled] = useState(false);
+  const [drawingEnabled, setDrawingEnabled] = useState(false);
+  const [drawingHasInk, setDrawingHasInk] = useState(false);
+  const [drawColor, setDrawColor] = useState<string>('#222');
+  const [isListeningMusic, setIsListeningMusic] = useState(false);
+  const [cameraZoom, setCameraZoom] = useState(1);
+  const [visibleTranslations, setVisibleTranslations] = useState<Set<number>>(() => new Set());
+  const [translatingId, setTranslatingId] = useState<number | null>(null);
   const chatShownAtRef = useRef<number>(0);
-  const replayAudioRef = useRef<HTMLAudioElement | null>(null);
   const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
+  const drawingCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawingActiveRef = useRef(false);
+  const drawingLastRef = useRef<{x: number; y: number} | null>(null);
+  const musicRecorderRef = useRef<MediaRecorder | null>(null);
+  const musicChunksRef = useRef<Blob[]>([]);
+  const musicTimerRef = useRef<number | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const messageIdRef = useRef(messages.length);
@@ -86,7 +99,7 @@ export const App: React.FC = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
-  const {mouthShape, isSpeaking, spokenText, currentSpeech, speak, setMuted} =
+  const {mouthShape, isSpeaking, spokenText, currentSpeech, speak, replay, setMuted} =
     useAudioLipSync();
 
   const isMobile = useIsMobile();
@@ -162,12 +175,9 @@ const toggleFullscreen = useCallback(() => {
   }, []);
 
   // Sync mute state into the lip-sync hook so a live in-progress audio
-  // element gets muted immediately and future speak() calls start muted.
+  // element gets muted immediately and future speak()/replay() calls start muted.
   useEffect(() => {
     setMuted(isMuted);
-    if (replayAudioRef.current) {
-      replayAudioRef.current.muted = isMuted;
-    }
   }, [isMuted, setMuted]);
 
   // Idle mouth when not speaking
@@ -496,6 +506,224 @@ const toggleFullscreen = useCallback(() => {
     }
   }, [webcamEnabled, isThinking, isSpeaking, isRecording, isTranscribing, speak]);
 
+  // Drawing canvas: initialize white background and HiDPI scale on enable.
+  useEffect(() => {
+    if (!drawingEnabled) return;
+    const c = drawingCanvasRef.current;
+    if (!c) return;
+    const ratio = window.devicePixelRatio || 1;
+    const w = c.clientWidth;
+    const h = c.clientHeight;
+    c.width = Math.max(1, Math.floor(w * ratio));
+    c.height = Math.max(1, Math.floor(h * ratio));
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    setDrawingHasInk(false);
+  }, [drawingEnabled]);
+
+  const drawStart = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    const c = drawingCanvasRef.current;
+    if (!c) return;
+    e.preventDefault();
+    try { c.setPointerCapture(e.pointerId); } catch {}
+    const r = c.getBoundingClientRect();
+    drawingActiveRef.current = true;
+    drawingLastRef.current = {x: e.clientX - r.left, y: e.clientY - r.top};
+  }, []);
+
+  const drawMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingActiveRef.current) return;
+    const c = drawingCanvasRef.current;
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    const r = c.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    const last = drawingLastRef.current;
+    if (last) {
+      ctx.strokeStyle = drawColor;
+      ctx.lineWidth = drawColor === '#fff' ? 16 : 3;
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    }
+    drawingLastRef.current = {x, y};
+    if (!drawingHasInk && drawColor !== '#fff') setDrawingHasInk(true);
+  }, [drawColor, drawingHasInk]);
+
+  const drawEnd = useCallback(() => {
+    drawingActiveRef.current = false;
+    drawingLastRef.current = null;
+  }, []);
+
+  const clearDrawing = useCallback(() => {
+    const c = drawingCanvasRef.current;
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, c.clientWidth, c.clientHeight);
+    setDrawingHasInk(false);
+  }, []);
+
+  const sendDrawingToAI = useCallback(async () => {
+    const c = drawingCanvasRef.current;
+    if (!c || !drawingHasInk) return;
+    if (isThinking || isSpeaking || isRecording || isTranscribing) return;
+    const dataUrl = c.toDataURL('image/png');
+
+    setMessages((prev) => [...prev, {
+      id: ++messageIdRef.current,
+      text: 'Look what I drew!',
+      sender: 'user',
+      timestamp: new Date(),
+      imageUrl: dataUrl,
+    }]);
+
+    setIsThinking(true);
+    try {
+      const res = await fetch('/api/vision', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({imageBase64: dataUrl, mode: 'sketch'}),
+      });
+      if (!res.ok) throw new Error(`Vision failed: ${res.status}`);
+      const {reply} = await res.json();
+      conversationRef.current.push({role: 'user', content: 'Look what I drew!'});
+      conversationRef.current.push({role: 'assistant', content: reply});
+
+      const audioBlob = await fetchSpeechAudio(reply);
+      const audioUrl = URL.createObjectURL(audioBlob);
+      setIsThinking(false);
+      await speak(reply, audioBlob);
+      setMessages((prev) => [...prev, {
+        id: ++messageIdRef.current,
+        text: reply,
+        sender: 'avatar',
+        timestamp: new Date(),
+        audioUrl,
+      }]);
+    } catch (err) {
+      console.error('Drawing vision error:', err);
+      setIsThinking(false);
+      setMessages((prev) => [...prev, {
+        id: ++messageIdRef.current,
+        text: "Hmm, I couldn't quite make that out!",
+        sender: 'avatar',
+        timestamp: new Date(),
+      }]);
+    }
+  }, [drawingHasInk, isThinking, isSpeaking, isRecording, isTranscribing, speak]);
+
+  // "Guess this music" — record up to 12s, transcribe + ask Mona to guess.
+  // Click once to start, click again to stop early.
+  const toggleMusicListen = useCallback(async () => {
+    if (isListeningMusic) {
+      const rec = musicRecorderRef.current;
+      if (rec && rec.state !== 'inactive') rec.stop();
+      if (musicTimerRef.current != null) {
+        window.clearTimeout(musicTimerRef.current);
+        musicTimerRef.current = null;
+      }
+      return;
+    }
+    if (isThinking || isSpeaking || isRecording || isTranscribing) return;
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    } catch (err) {
+      console.error('Mic permission denied for music guess:', err);
+      setMessages((prev) => [...prev, {
+        id: ++messageIdRef.current,
+        text: 'I need microphone access to listen to music!',
+        sender: 'avatar',
+        timestamp: new Date(),
+      }]);
+      return;
+    }
+
+    const recorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
+    musicRecorderRef.current = recorder;
+    musicChunksRef.current = [];
+    setIsListeningMusic(true);
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) musicChunksRef.current.push(e.data);
+    };
+
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      musicRecorderRef.current = null;
+      if (musicTimerRef.current != null) {
+        window.clearTimeout(musicTimerRef.current);
+        musicTimerRef.current = null;
+      }
+      setIsListeningMusic(false);
+
+      const blob = new Blob(musicChunksRef.current, {type: 'audio/webm'});
+      musicChunksRef.current = [];
+      if (blob.size < 2000) return; // discard tiny / silent recordings
+
+      // base64-encode for the existing JSON-body endpoint shape
+      const buf = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      const audio = btoa(bin);
+
+      setIsThinking(true);
+      try {
+        const res = await fetch('/api/guess-music', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({audio}),
+        });
+        if (!res.ok) throw new Error(`guess-music ${res.status}`);
+        const {reply} = await res.json();
+        // Push to conversationRef so later turns can reference "that song" — but
+        // do NOT add a synthetic user bubble to the visible chat (the user
+        // didn't actually type anything; they just clicked the music icon).
+        conversationRef.current.push({role: 'user', content: '[played a music clip] What song is it?'});
+        conversationRef.current.push({role: 'assistant', content: reply});
+
+        const audioBlob = await fetchSpeechAudio(reply);
+        const audioUrl = URL.createObjectURL(audioBlob);
+        setIsThinking(false);
+        await speak(reply, audioBlob);
+        setMessages((prev) => [...prev, {
+          id: ++messageIdRef.current,
+          text: reply,
+          sender: 'avatar',
+          timestamp: new Date(),
+          audioUrl,
+        }]);
+      } catch (err) {
+        console.error('Music guess error:', err);
+        setIsThinking(false);
+        setMessages((prev) => [...prev, {
+          id: ++messageIdRef.current,
+          text: "Hmm, I couldn't quite catch that song!",
+          sender: 'avatar',
+          timestamp: new Date(),
+        }]);
+      }
+    };
+
+    recorder.start();
+    // auto-stop after 12s
+    musicTimerRef.current = window.setTimeout(() => {
+      if (recorder.state !== 'inactive') recorder.stop();
+    }, 12000);
+  }, [isListeningMusic, isThinking, isSpeaking, isRecording, isTranscribing, speak]);
+
   // Webcam: acquire stream when enabled, release when disabled.
   useEffect(() => {
     if (!webcamEnabled) return;
@@ -623,21 +851,47 @@ const toggleFullscreen = useCallback(() => {
     };
   }, [wakeEnabled]);
 
-  // Replay avatar audio
-  const replayAudio = useCallback((msgId: number, audioUrl: string) => {
+  // Toggle a per-message translation (auto-detects direction English ↔ Chinese).
+  // First click fetches + caches the translation; later clicks just toggle visibility.
+  const handleTranslate = useCallback(async (msg: ChatMessage) => {
+    setVisibleTranslations((prev) => {
+      const next = new Set(prev);
+      if (next.has(msg.id)) next.delete(msg.id);
+      else next.add(msg.id);
+      return next;
+    });
+    if (msg.translation) return; // already cached
+    setTranslatingId(msg.id);
+    try {
+      const res = await fetch('/api/translate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: msg.text}),
+      });
+      if (!res.ok) throw new Error(`translate ${res.status}`);
+      const {translation} = await res.json();
+      setMessages((prev) => prev.map((m) => (m.id === msg.id ? {...m, translation} : m)));
+    } catch (err) {
+      console.error('Translate error:', err);
+      // hide the (failed) translation row again so the spinner doesn't linger
+      setVisibleTranslations((prev) => {
+        const next = new Set(prev);
+        next.delete(msg.id);
+        return next;
+      });
+    } finally {
+      setTranslatingId(null);
+    }
+  }, []);
+
+  // Replay avatar audio with lipsync (mirrors the live speak() path).
+  const replayAudio = useCallback((msgId: number, text: string, audioUrl: string) => {
     if (playingMsgId === msgId) return; // already playing this one
-    const audio = new Audio(audioUrl);
-    audio.muted = isMuted;
-    replayAudioRef.current = audio;
     setPlayingMsgId(msgId);
-    audio.play();
-    const clear = () => {
-      if (replayAudioRef.current === audio) replayAudioRef.current = null;
-      setPlayingMsgId(null);
-    };
-    audio.onended = clear;
-    audio.onerror = clear;
-  }, [playingMsgId, isMuted]);
+    replay(text, audioUrl).finally(() => {
+      setPlayingMsgId((cur) => (cur === msgId ? null : cur));
+    });
+  }, [playingMsgId, replay]);
 
   const activeMouth = isSpeaking ? mouthShape : idleMouth;
 
@@ -661,7 +915,192 @@ const toggleFullscreen = useCallback(() => {
             else { lastTapRef.current = now; }
           }}
         >
-          <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} isMobile={isMobile} />
+          <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} isMobile={isMobile} zoom={cameraZoom} />
+
+          {/* Floating scene controls — webcam + drawing pad toggles. Lives on the
+              avatar scene (not the chat header) so each toggle visually couples
+              with the panel it opens (both panels render on this scene's right). */}
+          <div
+            style={{
+              position: 'absolute',
+              top: isMobile ? 12 : 16,
+              left: isMobile ? 12 : 16,
+              display: 'flex',
+              gap: 6,
+              padding: 4,
+              background: 'rgba(0,0,0,0.45)',
+              backdropFilter: 'blur(8px)',
+              WebkitBackdropFilter: 'blur(8px)',
+              borderRadius: 18,
+              border: '1px solid rgba(255,255,255,0.08)',
+              zIndex: 5,
+            }}
+          >
+            <button
+              onClick={() => setWebcamEnabled((w) => !w)}
+              aria-label={webcamEnabled ? 'Hide webcam' : 'Show webcam'}
+              aria-pressed={webcamEnabled}
+              title={webcamEnabled ? 'Hide webcam' : 'Show webcam'}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 14,
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+                background: webcamEnabled ? 'rgba(239,68,68,0.3)' : 'transparent',
+                color: webcamEnabled ? '#fca5a5' : '#e5e5e5',
+                transition: 'background 0.2s, color 0.2s',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="23 7 16 12 23 17 23 7" />
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setDrawingEnabled((d) => !d)}
+              aria-label={drawingEnabled ? 'Hide drawing pad' : 'Show drawing pad'}
+              aria-pressed={drawingEnabled}
+              title={drawingEnabled ? 'Hide drawing pad' : 'Show drawing pad'}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 14,
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+                background: drawingEnabled ? 'rgba(124,58,237,0.35)' : 'transparent',
+                color: drawingEnabled ? '#c4b5fd' : '#e5e5e5',
+                transition: 'background 0.2s, color 0.2s',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+                <path d="M2 2l7.586 7.586" />
+                <circle cx="11" cy="11" r="2" />
+              </svg>
+            </button>
+            <button
+              onClick={toggleMusicListen}
+              disabled={!isListeningMusic && (isThinking || isSpeaking || isRecording || isTranscribing)}
+              aria-label={isListeningMusic ? 'Stop listening (guess the song)' : 'Listen and guess the song'}
+              aria-pressed={isListeningMusic}
+              title={isListeningMusic ? 'Listening… click to stop' : 'Listen and guess the song'}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 14,
+                border: 'none',
+                cursor: !isListeningMusic && (isThinking || isSpeaking || isRecording || isTranscribing) ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+                background: isListeningMusic ? 'rgba(34,197,94,0.4)' : 'transparent',
+                color: isListeningMusic ? '#86efac' : '#e5e5e5',
+                transition: 'background 0.2s, color 0.2s',
+                animation: isListeningMusic ? 'pulse 1.2s ease-in-out infinite' : 'none',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 18V5l12-2v13" />
+                <circle cx="6" cy="18" r="3" />
+                <circle cx="18" cy="16" r="3" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Camera zoom controls — vertical pill at bottom-left of the scene.
+              Only changes camera distance along the existing look-vector;
+              cameraTarget and fov are preserved so the shoulder/head framing
+              stays exactly as authored. Reset returns zoom to 1. */}
+          {(() => {
+            const min = 0.2;
+            const max = 2.5;
+            const step = 1.15;
+            const zoomIn = () => setCameraZoom((z) => Math.min(max, +(z * step).toFixed(3)));
+            const zoomOut = () => setCameraZoom((z) => Math.max(min, +(z / step).toFixed(3)));
+            const zoomReset = () => setCameraZoom(1);
+            const btn = (
+              onClick: () => void,
+              label: string,
+              children: React.ReactNode,
+              disabled = false,
+            ) => (
+              <button
+                onClick={onClick}
+                disabled={disabled}
+                aria-label={label}
+                title={label}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 14,
+                  border: 'none',
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: 0,
+                  background: 'transparent',
+                  color: disabled ? '#666' : '#e5e5e5',
+                  transition: 'background 0.15s, color 0.15s',
+                  opacity: disabled ? 0.5 : 1,
+                }}
+              >
+                {children}
+              </button>
+            );
+            return (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: isMobile ? 12 : 16,
+                  left: isMobile ? 12 : 16,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  padding: 4,
+                  background: 'rgba(0,0,0,0.45)',
+                  backdropFilter: 'blur(8px)',
+                  WebkitBackdropFilter: 'blur(8px)',
+                  borderRadius: 18,
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  zIndex: 5,
+                }}
+              >
+                {btn(zoomIn, 'Zoom in', (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                ), cameraZoom >= max - 0.001)}
+                {btn(zoomReset, 'Reset zoom', (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="8" />
+                    <circle cx="12" cy="12" r="2" />
+                    <line x1="12" y1="2" x2="12" y2="5" />
+                    <line x1="12" y1="19" x2="12" y2="22" />
+                    <line x1="2" y1="12" x2="5" y2="12" />
+                    <line x1="19" y1="12" x2="22" y2="12" />
+                  </svg>
+                ), Math.abs(cameraZoom - 1) < 0.001)}
+                {btn(zoomOut, 'Zoom out', (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                ), cameraZoom <= min + 0.001)}
+              </div>
+            );
+          })()}
 
           {/* Webcam preview — corner panel; positioned away from avatar's face */}
           {webcamEnabled && (
@@ -733,6 +1172,116 @@ const toggleFullscreen = useCallback(() => {
               </button>
             </div>
           )}
+
+          {/* Drawing pad — sketch canvas + tools, positioned below webcam panel
+              (or in webcam's slot if webcam is off). User draws → 'Show Mona'
+              sends the canvas to /api/vision (mode: sketch) and Mona reacts. */}
+          {drawingEnabled && (() => {
+            const gap = isMobile ? 12 : 16;
+            const panelWidth = isMobile ? 168 : 280;
+            const webcamHeight = panelWidth * 0.75; // matches webcam aspect 4:3
+            const top = (isMobile ? 12 : 16) + (webcamEnabled ? webcamHeight + gap : 0);
+            const swatch = (color: string, label: string) => (
+              <button
+                key={color}
+                onClick={() => setDrawColor(color)}
+                aria-label={label}
+                title={label}
+                style={{
+                  width: 22, height: 22, borderRadius: 11,
+                  border: drawColor === color ? '2px solid #222' : '2px solid rgba(0,0,0,0.15)',
+                  background: color === '#fff' ? 'repeating-linear-gradient(45deg,#eee,#eee 3px,#fff 3px,#fff 6px)' : color,
+                  cursor: 'pointer', padding: 0,
+                }}
+              />
+            );
+            const busy = isThinking || isSpeaking || isRecording || isTranscribing;
+            return (
+              <div
+                style={{
+                  position: 'absolute',
+                  right: gap,
+                  top,
+                  width: panelWidth,
+                  borderRadius: 12,
+                  background: '#fdfcf7',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+                  border: '1px solid rgba(0,0,0,0.12)',
+                  zIndex: 5,
+                  overflow: 'hidden',
+                  fontFamily: 'system-ui, sans-serif',
+                  color: '#222',
+                }}
+              >
+                <canvas
+                  ref={drawingCanvasRef}
+                  onPointerDown={drawStart}
+                  onPointerMove={drawMove}
+                  onPointerUp={drawEnd}
+                  onPointerCancel={drawEnd}
+                  onPointerLeave={drawEnd}
+                  style={{
+                    display: 'block',
+                    width: '100%',
+                    height: panelWidth, // square
+                    touchAction: 'none',
+                    cursor: 'crosshair',
+                    background: '#fff',
+                  }}
+                />
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '6px 8px',
+                    borderTop: '1px solid rgba(0,0,0,0.08)',
+                    background: '#fdfcf7',
+                  }}
+                >
+                  {swatch('#222', 'Black')}
+                  {swatch('#e74c3c', 'Red')}
+                  {swatch('#3498db', 'Blue')}
+                  {swatch('#fff', 'Eraser')}
+                  <button
+                    onClick={clearDrawing}
+                    aria-label="Clear drawing"
+                    title="Clear"
+                    style={{
+                      marginLeft: 'auto',
+                      padding: '4px 8px',
+                      borderRadius: 6,
+                      border: '1px solid rgba(0,0,0,0.15)',
+                      background: '#fff',
+                      cursor: 'pointer',
+                      fontSize: 11,
+                      color: '#222',
+                    }}
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={sendDrawingToAI}
+                    disabled={!drawingHasInk || busy}
+                    aria-label="Show Mona this drawing"
+                    title="Show Mona"
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: 6,
+                      border: 'none',
+                      background: !drawingHasInk || busy ? 'rgba(0,0,0,0.15)' : '#7c3aed',
+                      color: '#fff',
+                      cursor: !drawingHasInk || busy ? 'not-allowed' : 'pointer',
+                      fontSize: 11,
+                      fontWeight: 600,
+                    }}
+                  >
+                    Show Mona
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Show-chat button */}
           {!isChatVisible && (
@@ -839,26 +1388,10 @@ const toggleFullscreen = useCallback(() => {
             )}
           </button>
           <button
-            onClick={() => setWebcamEnabled((w) => !w)}
-            style={{
-              ...styles.headerIconButton,
-              marginLeft: 'auto',
-              ...(webcamEnabled ? styles.headerIconButtonActive : {}),
-            }}
-            aria-label={webcamEnabled ? 'Hide webcam' : 'Show webcam'}
-            aria-pressed={webcamEnabled}
-            title={webcamEnabled ? 'Hide webcam' : 'Show webcam'}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="23 7 16 12 23 17 23 7" />
-              <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-            </svg>
-          </button>
-          <button
             onClick={() => setWakeEnabled((w) => !w)}
             style={{
               ...styles.headerIconButton,
-              marginLeft: 8,
+              marginLeft: 'auto',
               ...(wakeEnabled ? styles.headerIconButtonActive : {}),
             }}
             aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey mona")'}
@@ -1033,10 +1566,31 @@ const toggleFullscreen = useCallback(() => {
                     />
                   </a>
                 )}
+                {visibleTranslations.has(msg.id) && (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      paddingTop: 6,
+                      borderTop: '1px dashed rgba(255,255,255,0.12)',
+                      fontSize: 13,
+                      fontStyle: 'italic',
+                      opacity: 0.8,
+                      color: '#cbd5e1',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {msg.translation
+                      ? msg.translation
+                      : translatingId === msg.id
+                        ? 'Translating…'
+                        : ''}
+                  </div>
+                )}
                 <div style={styles.messageFooter}>
                   {msg.sender === 'avatar' && msg.audioUrl && (
                     <button
-                      onClick={() => replayAudio(msg.id, msg.audioUrl!)}
+                      onClick={() => replayAudio(msg.id, msg.text, msg.audioUrl!)}
                       style={{
                         ...styles.replayButton,
                         ...(playingMsgId === msg.id ? styles.replayButtonPlaying : {}),
@@ -1054,6 +1608,28 @@ const toggleFullscreen = useCallback(() => {
                       )}
                     </button>
                   )}
+                  <button
+                    onClick={() => handleTranslate(msg)}
+                    disabled={translatingId === msg.id}
+                    style={{
+                      ...styles.replayButton,
+                      ...(visibleTranslations.has(msg.id) ? styles.replayButtonPlaying : {}),
+                      opacity: translatingId === msg.id ? 0.6 : 1,
+                    }}
+                    aria-label="Translate"
+                    aria-pressed={visibleTranslations.has(msg.id)}
+                    title={
+                      /[一-鿿]/.test(msg.text)
+                        ? 'Translate to English'
+                        : 'Translate to Chinese (中文)'
+                    }
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="10" />
+                      <path d="M2 12h20" />
+                      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                    </svg>
+                  </button>
                   <span style={styles.timestamp}>
                     {msg.timestamp.toLocaleTimeString([], {
                       hour: '2-digit',
@@ -1267,7 +1843,26 @@ const toggleFullscreen = useCallback(() => {
                         <img src={msg.imageUrl} alt="generated" style={{marginTop: 8, maxWidth: '100%', borderRadius: 12, display: 'block'}} />
                       </a>
                     )}
+                    {visibleTranslations.has(msg.id) && (
+                      <div style={{marginTop: 6, paddingTop: 6, borderTop: '1px dashed rgba(255,255,255,0.12)', fontSize: 13, fontStyle: 'italic', opacity: 0.8, color: '#cbd5e1', whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
+                        {msg.translation ? msg.translation : translatingId === msg.id ? 'Translating…' : ''}
+                      </div>
+                    )}
                     <div style={styles.messageFooter}>
+                      <button
+                        onClick={() => handleTranslate(msg)}
+                        disabled={translatingId === msg.id}
+                        style={{...styles.replayButton, ...(visibleTranslations.has(msg.id) ? styles.replayButtonPlaying : {}), opacity: translatingId === msg.id ? 0.6 : 1}}
+                        aria-label="Translate"
+                        aria-pressed={visibleTranslations.has(msg.id)}
+                        title={/[一-鿿]/.test(msg.text) ? 'Translate to English' : 'Translate to Chinese (中文)'}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="10" />
+                          <path d="M2 12h20" />
+                          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                        </svg>
+                      </button>
                       <span style={styles.timestamp}>{msg.timestamp.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</span>
                     </div>
                   </div>

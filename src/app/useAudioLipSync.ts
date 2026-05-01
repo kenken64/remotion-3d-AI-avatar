@@ -47,15 +47,14 @@ export function useAudioLipSync() {
     }
   }, []);
 
-  const speak = useCallback(
-    (text: string, audioBlob: Blob): Promise<void> => {
+  const playWithLipSync = useCallback(
+    (text: string, audioUrl: string, ownsUrl: boolean): Promise<void> => {
       return new Promise((resolve) => {
         cleanup();
 
-        const url = URL.createObjectURL(audioBlob);
-        urlRef.current = url;
+        if (ownsUrl) urlRef.current = audioUrl;
 
-        const audio = new Audio(url);
+        const audio = new Audio(audioUrl);
         audio.muted = mutedRef.current;
         audioRef.current = audio;
 
@@ -121,9 +120,25 @@ export function useAudioLipSync() {
     [cleanup],
   );
 
+  const speak = useCallback(
+    (text: string, audioBlob: Blob): Promise<void> => {
+      const url = URL.createObjectURL(audioBlob);
+      return playWithLipSync(text, url, true);
+    },
+    [playWithLipSync],
+  );
+
+  const replay = useCallback(
+    (text: string, audioUrl: string): Promise<void> => {
+      return playWithLipSync(text, audioUrl, false);
+    },
+    [playWithLipSync],
+  );
+
   return {
     ...state,
     speak,
+    replay,
     setMuted,
   };
 }

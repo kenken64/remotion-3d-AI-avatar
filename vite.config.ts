@@ -14,7 +14,7 @@ export default defineConfig({
       },
     },
     // allow the Funnel hostname plus local hosts used during testing
-    allowedHosts: ['openclaw-ff54485d.taile65e6a.ts.net', 'entire-dimension-gratuit-prophet.trycloudflare.com', 'relevant-control-part-alerts.trycloudflare.com', 'pill-berry-tahoe-incl.trycloudflare.com', 'episodes-job-lakes-squad.trycloudflare.com', 'butler-specialty-cemetery-travesti.trycloudflare.com', 'localhost', '127.0.0.1'],
+    allowedHosts: ['.trycloudflare.com', 'openclaw-ff54485d.taile65e6a.ts.net', 'localhost', '127.0.0.1'],
   },
   resolve: {
     alias: {

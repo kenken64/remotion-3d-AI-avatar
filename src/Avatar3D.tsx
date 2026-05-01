@@ -691,21 +691,31 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
   );
 }
 
-function FramedCamera({position, target, fov}: {
+function FramedCamera({position, target, fov, zoom = 1}: {
   position: [number, number, number];
   target: [number, number, number];
   fov: number;
+  zoom?: number;
 }) {
   const cameraRef = useRef<THREE.PerspectiveCamera>(null);
 
+  // zoom scales the camera's distance to the target along the existing look
+  // vector. zoom > 1 brings the camera closer; zoom < 1 pulls it farther.
+  // The look-at target and fov stay fixed so the avatar's shoulder/head
+  // framing is preserved regardless of zoom level.
+  const z = Math.max(0.0001, zoom);
+  const px = target[0] + (position[0] - target[0]) / z;
+  const py = target[1] + (position[1] - target[1]) / z;
+  const pz = target[2] + (position[2] - target[2]) / z;
+
   useEffect(() => {
     if (!cameraRef.current) return;
-    cameraRef.current.position.set(position[0], position[1], position[2]);
+    cameraRef.current.position.set(px, py, pz);
     cameraRef.current.lookAt(target[0], target[1], target[2]);
     cameraRef.current.updateProjectionMatrix();
-  }, [position, target, fov]);
+  }, [px, py, pz, target, fov]);
 
-  return <PerspectiveCamera ref={cameraRef} makeDefault position={position} fov={fov} />;
+  return <PerspectiveCamera ref={cameraRef} makeDefault position={[px, py, pz]} fov={fov} />;
 }
 
 // ========== Main 3D Scene ==========
@@ -714,9 +724,10 @@ interface Avatar3DProps {
   breatheY: number;
   isSpeaking?: boolean;
   isMobile?: boolean;
+  zoom?: number;
 }
 
-export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeaking = false, isMobile = false}) => {
+export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeaking = false, isMobile = false, zoom = 1}) => {
   const cameraPos: [number, number, number] = isMobile ? [0, 1.95, 2.15] : [0, 1.8, 1.95];
   const cameraTarget: [number, number, number] = isMobile ? [0, 1.7, 0] : [0, 1.55, 0];
   const fov = isMobile ? 26 : 22;
@@ -726,7 +737,7 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeak
       style={{width: '100%', height: '100%'}}
       gl={{antialias: true, alpha: true, toneMapping: THREE.ACESFilmicToneMapping}}
     >
-      <FramedCamera position={cameraPos} target={cameraTarget} fov={fov} />
+      <FramedCamera position={cameraPos} target={cameraTarget} fov={fov} zoom={zoom} />
 
       <color attach="background" args={['#03131a']} />
 

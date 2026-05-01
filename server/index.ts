@@ -23,12 +23,31 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Chat goes to OpenClaw's OpenAI-compatible endpoint; TTS/STT stay on OpenAI.
+// Chat goes directly to ttyproxy's Ollama-compatible endpoint, bypassing
+// OpenClaw to avoid ~30s of per-turn agent prep. ttyproxy fronts Claude Code
+// CLI, so the model id matches what `openclaw plugins` exposes for ollama.
+// chatClient is kept for the optional VISION_USE_OPENCLAW path below.
 const chatClient = new OpenAI({
   baseURL: process.env.CHAT_BASE_URL || 'http://127.0.0.1:18789/v1',
   apiKey: process.env.CHAT_API_KEY || process.env.OPENAI_API_KEY,
 });
-const CHAT_MODEL = process.env.CHAT_MODEL || 'gpt-4o-mini';
+const TTYPROXY_BASE_URL = process.env.TTYPROXY_BASE_URL || 'http://127.0.0.1:11435';
+const CHAT_MODEL = process.env.CHAT_MODEL || 'claude-code:latest';
+
+type ChatMsg = {role: string; content: string};
+
+async function ollamaChat(messages: ChatMsg[]): Promise<string> {
+  const res = await fetch(`${TTYPROXY_BASE_URL}/api/chat`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: CHAT_MODEL, messages, stream: false}),
+  });
+  if (!res.ok) {
+    throw new Error(`ttyproxy ${res.status}: ${await res.text().catch(() => '')}`);
+  }
+  const data = (await res.json()) as {message?: {content?: string}};
+  return data?.message?.content ?? '';
+}
 
 // Detect if text contains Chinese characters
 function hasChinese(text: string): boolean {
@@ -77,23 +96,19 @@ app.post('/api/chat', async (req, res) => {
 
     const wantsImage = isImageRequest(userText);
 
-    const [completion, imageUrl] = await Promise.all([
-      chatClient.chat.completions.create({
-        model: CHAT_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content:
-              `You are Mona Lau, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${wantsImage ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.' : ''} ${languageInstruction}`,
-          },
-          ...messages,
-        ],
-        max_tokens: 150,
-      }),
+    const [replyText, imageUrl] = await Promise.all([
+      ollamaChat([
+        {
+          role: 'system',
+          content:
+            `You are Mona Lau, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${wantsImage ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.' : ''} ${languageInstruction}`,
+        },
+        ...messages,
+      ]),
       wantsImage ? generateImage(userText) : Promise.resolve(null),
     ]);
 
-    const reply = completion.choices[0]?.message?.content || (isChinese ? '我不确定该说什么。' : "I'm not sure what to say.");
+    const reply = replyText || (isChinese ? '我不确定该说什么。' : "I'm not sure what to say.");
     res.json({reply, imageUrl: imageUrl || undefined});
   } catch (err: any) {
     console.error('Chat error:', err.message);
@@ -109,7 +124,7 @@ const VISION_MODEL = process.env.VISION_MODEL || 'gpt-4o-mini';
 
 app.post('/api/vision', async (req, res) => {
   try {
-    const {imageBase64, prompt} = req.body;
+    const {imageBase64, prompt, mode} = req.body;
     if (!imageBase64 || typeof imageBase64 !== 'string') {
       res.status(400).json({error: 'imageBase64 required'});
       return;
@@ -118,18 +133,22 @@ app.post('/api/vision', async (req, res) => {
       ? imageBase64
       : `data:image/jpeg;base64,${imageBase64}`;
 
+    const systemPrompt =
+      mode === 'sketch'
+        ? "You are Mona Lau, a friendly, witty AI avatar. The user just drew a quick doodle on a small canvas and is showing it to you. Be warm, playful, and encouraging — guess what it is, react to it, and tease them gently if it's rough. Keep it to 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural."
+        : 'You are Mona Lau, a friendly, witty AI avatar. The user is showing you a webcam frame — describe what you see clearly and concisely in 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural.';
+
+    const defaultUserPrompt =
+      mode === 'sketch' ? 'I drew this. What do you think it is?' : 'What do you see in this image?';
+
     const completion = await visionClient.chat.completions.create({
       model: VISION_MODEL,
       messages: [
-        {
-          role: 'system',
-          content:
-            'You are Mona Lau, a friendly, witty AI avatar. The user is showing you a webcam frame — describe what you see clearly and concisely in 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural.',
-        },
+        {role: 'system', content: systemPrompt},
         {
           role: 'user',
           content: [
-            {type: 'text', text: prompt || 'What do you see in this image?'},
+            {type: 'text', text: prompt || defaultUserPrompt},
             {type: 'image_url', image_url: {url: dataUrl}},
           ] as any,
         },
@@ -230,6 +249,80 @@ app.post('/api/transcribe', async (req, res) => {
   } catch (err: any) {
     console.error('Transcription error:', err.message);
     res.status(500).json({error: 'Failed to transcribe audio'});
+  }
+});
+
+// Translate text — auto-detects direction (English ↔ Simplified Chinese)
+// based on whether the input contains Han characters. Output is the
+// translation only, no preamble.
+app.post('/api/translate', async (req, res) => {
+  try {
+    const {text, targetLang} = req.body;
+    if (!text || typeof text !== 'string') {
+      res.status(400).json({error: 'text required'});
+      return;
+    }
+    const isChinese = /[一-鿿]/.test(text);
+    const target = targetLang === 'zh' || targetLang === 'en'
+      ? targetLang
+      : (isChinese ? 'en' : 'zh');
+    const targetName = target === 'zh' ? 'Simplified Chinese' : 'English';
+
+    const reply = await ollamaChat([
+      {
+        role: 'system',
+        content:
+          `You are a precise translator. Translate the user's text to ${targetName}. Output ONLY the translation — no quotes, no explanation, no preamble. Preserve tone and intent.`,
+      },
+      {role: 'user', content: text},
+    ]);
+
+    res.json({translation: (reply ?? '').trim(), targetLang: target});
+  } catch (err: any) {
+    console.error('Translate error:', err.message);
+    res.status(500).json({error: 'Failed to translate'});
+  }
+});
+
+// "Guess this music" — record ~10s, transcribe lyrics with Whisper, ask
+// Mona to guess the song. Honest fail mode: instrumental tracks return no
+// lyrics and Mona guesses the genre/mood instead.
+app.post('/api/guess-music', async (req, res) => {
+  try {
+    const {audio} = req.body;
+    if (!audio) {
+      res.status(400).json({error: 'No audio data provided'});
+      return;
+    }
+    const buffer = Buffer.from(audio, 'base64');
+
+    const transcription = await openai.audio.transcriptions.create({
+      model: 'whisper-1',
+      file: await toFile(buffer, 'music.webm', {type: 'audio/webm'}),
+      response_format: 'text',
+    });
+    const lyrics = String(transcription ?? '').trim();
+
+    const guessPrompt = lyrics
+      ? `Someone just played me a snippet of music. The lyrics I caught were: "${lyrics}". Guess what song this is. Be playful — if you recognize it confidently, name it; if you're unsure, say "I think it might be..." and offer your best guess. Keep it to 1-3 sentences. Your reply will be spoken aloud.`
+      : `Someone played me a snippet of music but I couldn't catch any lyrics — it's probably instrumental or muddy. Playfully admit you can't quite catch the song and guess the genre/mood instead. Keep it to 1-3 sentences. Your reply will be spoken aloud.`;
+
+    const reply = await ollamaChat([
+      {
+        role: 'system',
+        content:
+          "You are Mona Lau, a friendly, witty AI avatar who loves music. You're playing a song-guessing game with the user.",
+      },
+      {role: 'user', content: guessPrompt},
+    ]);
+
+    res.json({
+      reply: reply || "I'm not sure what that is, but it sounded fun!",
+      lyrics,
+    });
+  } catch (err: any) {
+    console.error('Music guess error:', err.message);
+    res.status(500).json({error: 'Failed to identify music'});
   }
 });
 
