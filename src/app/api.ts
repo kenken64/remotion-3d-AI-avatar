@@ -51,7 +51,7 @@ export async function fetchSpeechAudio(text: string): Promise<Blob> {
   const res = await fetch('/api/tts', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({text, voice: 'nova'}),
+    body: JSON.stringify({text, voice: 'onyx'}),
   });
 
   if (!res.ok) {

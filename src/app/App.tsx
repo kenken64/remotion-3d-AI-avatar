@@ -622,7 +622,7 @@ const toggleFullscreen = useCallback(() => {
     }
   }, [drawingHasInk, isThinking, isSpeaking, isRecording, isTranscribing, speak]);
 
-  // "Guess this music" — record up to 12s, transcribe + ask Mona to guess.
+  // "Guess this music" — record up to 12s, transcribe + ask kenken64 to guess.
   // Click once to start, click again to stop early.
   const toggleMusicListen = useCallback(async () => {
     if (isListeningMusic) {
@@ -767,7 +767,7 @@ const toggleFullscreen = useCallback(() => {
   const captureAndIdentifyRef = useRef(captureAndIdentify);
   captureAndIdentifyRef.current = captureAndIdentify;
 
-  // Wake-word listener ("hey mona") via Web Speech API.
+  // Wake-word listener ("hey kenken") via Web Speech API.
   // Mounted once per wakeEnabled toggle; ignores results when avatar is busy.
   useEffect(() => {
     if (!wakeEnabled) {
@@ -795,7 +795,7 @@ const toggleFullscreen = useCallback(() => {
     recog.onstart = () => {
       // Per-session reset so a previous trigger doesn't lock out future ones.
       triggered = false;
-      console.log('[wake] listener started — say "hey Mona"');
+      console.log('[wake] listener started — say "hey kenken"');
     };
     recog.onaudiostart = () => console.log('[wake] mic capturing audio');
     recog.onspeechstart = () => console.log('[wake] speech detected');
@@ -818,8 +818,8 @@ const toggleFullscreen = useCallback(() => {
           }
           // webcam off — ignore so listener keeps running
         }
-        // Talk wake phrase — accept common phonetic mishearings of "mona".
-        if (/\b(hey|hi|ok)\s+(mona|moana|mauna|monah|moaner|moner|monna|munna)\b/.test(transcript)) {
+        // Talk wake phrase — accept common phonetic mishearings of "kenken".
+        if (/\b(hey|hi|ok)\s+(ken|kenn|kenny|kent|kenken|kenken64)\b/.test(transcript)) {
           triggered = true; // session-local; reset on next onstart
           toggleRecordingRef.current();
           return;
@@ -1174,8 +1174,8 @@ const toggleFullscreen = useCallback(() => {
           )}
 
           {/* Drawing pad — sketch canvas + tools, positioned below webcam panel
-              (or in webcam's slot if webcam is off). User draws → 'Show Mona'
-              sends the canvas to /api/vision (mode: sketch) and Mona reacts. */}
+              (or in webcam's slot if webcam is off). User draws → 'Show kenken64'
+              sends the canvas to /api/vision (mode: sketch) and kenken64 reacts. */}
           {drawingEnabled && (() => {
             const gap = isMobile ? 12 : 16;
             const panelWidth = isMobile ? 168 : 280;
@@ -1263,8 +1263,8 @@ const toggleFullscreen = useCallback(() => {
                   <button
                     onClick={sendDrawingToAI}
                     disabled={!drawingHasInk || busy}
-                    aria-label="Show Mona this drawing"
-                    title="Show Mona"
+                    aria-label="Show kenken64 this drawing"
+                    title="Show kenken64"
                     style={{
                       padding: '4px 10px',
                       borderRadius: 6,
@@ -1276,7 +1276,7 @@ const toggleFullscreen = useCallback(() => {
                       fontWeight: 600,
                     }}
                   >
-                    Show Mona
+                    Show kenken64
                   </button>
                 </div>
               </div>
@@ -1369,7 +1369,7 @@ const toggleFullscreen = useCallback(() => {
             }}
           />
           <AvatarIcon size={32} />
-          <h2 style={styles.headerTitle}>Mona Lau</h2>
+          <h2 style={styles.headerTitle}>kenken64</h2>
           <button
             onClick={() => setPanelMode((m) => (m === 'chat' ? 'ptt' : 'chat'))}
             style={{...styles.headerIconButton, marginLeft: 8}}
@@ -1394,9 +1394,9 @@ const toggleFullscreen = useCallback(() => {
               marginLeft: 'auto',
               ...(wakeEnabled ? styles.headerIconButtonActive : {}),
             }}
-            aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey mona")'}
+            aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey kenken")'}
             aria-pressed={wakeEnabled}
-            title={wakeEnabled ? 'Wake word ON — say "hey mona"' : 'Enable wake word ("hey mona")'}
+            title={wakeEnabled ? 'Wake word ON — say "hey kenken"' : 'Enable wake word ("hey kenken")'}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
@@ -1546,7 +1546,7 @@ const toggleFullscreen = useCallback(() => {
                 }}
               >
                 {msg.sender === 'avatar' && (
-                  <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> Mona Lau</span>
+                  <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> kenken64</span>
                 )}
                 {msg.sender === 'user' && (
                   <span style={styles.userMsgLabel}>You</span>
@@ -1644,7 +1644,7 @@ const toggleFullscreen = useCallback(() => {
           {isThinking && (
             <div style={{...styles.messageBubble, ...styles.avatarMessage}}>
               <div style={{...styles.messageContent, ...styles.avatarContent}}>
-                <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> Mona Lau</span>
+                <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> kenken64</span>
                 <div style={styles.typingIndicator}>
                   <div style={styles.typingDot} />
                   <div style={{...styles.typingDot, animationDelay: '0.15s'}} />
@@ -1799,7 +1799,7 @@ const toggleFullscreen = useCallback(() => {
                 }}
               />
               <AvatarIcon size={28} />
-              <h2 style={{...styles.headerTitle, fontSize: 16}}>Mona Lau</h2>
+              <h2 style={{...styles.headerTitle, fontSize: 16}}>kenken64</h2>
               <button
                 onClick={() => setWakeEnabled((w) => !w)}
                 style={{
@@ -1807,9 +1807,9 @@ const toggleFullscreen = useCallback(() => {
                   marginLeft: 'auto',
                   ...(wakeEnabled ? styles.headerIconButtonActive : {}),
                 }}
-                aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey mona")'}
+                aria-label={wakeEnabled ? 'Disable wake word' : 'Enable wake word ("hey kenken")'}
                 aria-pressed={wakeEnabled}
-                title={wakeEnabled ? 'Wake word ON — say "hey mona"' : 'Enable wake word ("hey mona")'}
+                title={wakeEnabled ? 'Wake word ON — say "hey kenken"' : 'Enable wake word ("hey kenken")'}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="3" />

@@ -887,7 +887,7 @@ function AvatarLoader() {
           minWidth: 160,
         }}
       >
-        <div style={{fontWeight: 600, marginBottom: 8}}>Loading Mona…</div>
+        <div style={{fontWeight: 600, marginBottom: 8}}>Loading kenken64…</div>
         <div
           style={{
             width: '100%',

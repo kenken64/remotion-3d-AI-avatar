@@ -101,7 +101,7 @@ app.post('/api/chat', async (req, res) => {
         {
           role: 'system',
           content:
-            `You are Mona Lau, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${wantsImage ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.' : ''} ${languageInstruction}`,
+            `You are kenken64, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${wantsImage ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.' : ''} ${languageInstruction}`,
         },
         ...messages,
       ]),
@@ -135,8 +135,8 @@ app.post('/api/vision', async (req, res) => {
 
     const systemPrompt =
       mode === 'sketch'
-        ? "You are Mona Lau, a friendly, witty AI avatar. The user just drew a quick doodle on a small canvas and is showing it to you. Be warm, playful, and encouraging — guess what it is, react to it, and tease them gently if it's rough. Keep it to 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural."
-        : 'You are Mona Lau, a friendly, witty AI avatar. The user is showing you a webcam frame — describe what you see clearly and concisely in 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural.';
+        ? "You are kenken64, a friendly, witty AI avatar. The user just drew a quick doodle on a small canvas and is showing it to you. Be warm, playful, and encouraging — guess what it is, react to it, and tease them gently if it's rough. Keep it to 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural."
+        : 'You are kenken64, a friendly, witty AI avatar. The user is showing you a webcam frame — describe what you see clearly and concisely in 1 to 3 sentences. Your reply will be spoken aloud, so be conversational and natural.';
 
     const defaultUserPrompt =
       mode === 'sketch' ? 'I drew this. What do you think it is?' : 'What do you see in this image?';
@@ -189,7 +189,7 @@ app.post('/api/image', async (req, res) => {
 // Text-to-speech
 app.post('/api/tts', async (req, res) => {
   try {
-    const {text, voice = 'nova'} = req.body;
+    const {text, voice = 'onyx'} = req.body;
 
     const mp3 = await openai.audio.speech.create({
       model: 'tts-1',
@@ -285,8 +285,8 @@ app.post('/api/translate', async (req, res) => {
 });
 
 // "Guess this music" — record ~10s, transcribe lyrics with Whisper, ask
-// Mona to guess the song. Honest fail mode: instrumental tracks return no
-// lyrics and Mona guesses the genre/mood instead.
+// kenken64 to guess the song. Honest fail mode: instrumental tracks return no
+// lyrics and kenken64 guesses the genre/mood instead.
 app.post('/api/guess-music', async (req, res) => {
   try {
     const {audio} = req.body;
@@ -311,7 +311,7 @@ app.post('/api/guess-music', async (req, res) => {
       {
         role: 'system',
         content:
-          "You are Mona Lau, a friendly, witty AI avatar who loves music. You're playing a song-guessing game with the user.",
+          "You are kenken64, a friendly, witty AI avatar who loves music. You're playing a song-guessing game with the user.",
       },
       {role: 'user', content: guessPrompt},
     ]);
