@@ -55,7 +55,9 @@ export const App: React.FC = () => {
       const saved = localStorage.getItem('avatar-chat-history');
       if (saved) {
         const parsed = JSON.parse(saved) as ChatMessage[];
-        return parsed.map(m => ({...m, timestamp: new Date(m.timestamp)}));
+        // Reassign sequential ids — older saves may contain duplicates from a
+        // prior bug where messageIdRef collided with existing message ids.
+        return parsed.map((m, i) => ({...m, id: i + 1, timestamp: new Date(m.timestamp)}));
       }
     } catch { /* ignore */ }
     return [];
@@ -91,7 +93,7 @@ export const App: React.FC = () => {
   const musicTimerRef = useRef<number | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const messageIdRef = useRef(messages.length);
+  const messageIdRef = useRef(messages.reduce((m, x) => Math.max(m, x.id), 0));
   const conversationRef = useRef<ChatMsg[]>(
     messages.map(m => ({role: m.sender === 'user' ? 'user' : 'assistant', content: m.text}))
   );
