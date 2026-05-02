@@ -116,6 +116,118 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Streaming chat — same prompt shape as /api/chat, but proxies ttyproxy's
+// streaming Ollama response as Server-Sent Events. Clients receive incremental
+// `delta` events with token text, then a final `done` event carrying any
+// generated image URL. This lets the client begin per-sentence TTS the moment
+// the first sentence boundary arrives instead of waiting for the full reply.
+app.post('/api/chat-stream', async (req, res) => {
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+
+  const send = (event: string, data: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const upstream = new AbortController();
+  req.on('close', () => upstream.abort());
+
+  try {
+    const {messages} = req.body;
+    const lastUserMsg = [...messages].reverse().find((m: any) => m.role === 'user');
+    const userText = lastUserMsg?.content || '';
+    const isChinese = hasChinese(userText);
+    const wantsImage = isImageRequest(userText);
+    const languageInstruction = isChinese
+      ? 'The user is speaking Chinese. You MUST reply in Chinese (Simplified Mandarin). Do not reply in English.'
+      : 'The user is speaking English. You MUST reply in English. Do not reply in Chinese.';
+
+    const imagePromise: Promise<string | null> = wantsImage
+      ? generateImage(userText)
+      : Promise.resolve(null);
+
+    const upstreamRes = await fetch(`${TTYPROXY_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        model: CHAT_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: `You are kenken64, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${
+              wantsImage
+                ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.'
+                : ''
+            } ${languageInstruction}`,
+          },
+          ...messages,
+        ],
+        stream: true,
+      }),
+      signal: upstream.signal,
+    });
+
+    if (!upstreamRes.ok || !upstreamRes.body) {
+      throw new Error(`ttyproxy ${upstreamRes.status}`);
+    }
+
+    const reader = upstreamRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let full = '';
+    let upstreamDone = false;
+
+    while (!upstreamDone) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const obj = JSON.parse(trimmed);
+          const delta: string = obj?.message?.content || '';
+          if (delta) {
+            full += delta;
+            send('delta', {text: delta});
+          }
+          if (obj?.done) {
+            upstreamDone = true;
+            break;
+          }
+        } catch {
+          // ignore partial / non-JSON lines
+        }
+      }
+    }
+
+    const fallback = isChinese ? '我不确定该说什么。' : "I'm not sure what to say.";
+    if (!full.trim()) {
+      full = fallback;
+      send('delta', {text: full});
+    }
+
+    const imageUrl = await imagePromise;
+    send('done', {full, imageUrl: imageUrl || undefined});
+    res.end();
+  } catch (err: any) {
+    console.error('Chat stream error:', err.message);
+    try {
+      send('error', {error: err.message || 'stream failed'});
+    } catch {
+      /* socket already closed */
+    }
+    res.end();
+  }
+});
+
 // Vision: send a webcam frame to a vision-capable model and ask it to describe.
 // Routed through OpenAI (gpt-4o-mini) by default since OpenClaw's chat
 // gateway doesn't accept OpenAI multimodal image_url content.

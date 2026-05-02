@@ -1,7 +1,7 @@
 import React, {useState, useRef, useEffect, useCallback, useMemo} from 'react';
 import {Avatar3D} from '../Avatar3D';
 import {useAudioLipSync} from './useAudioLipSync';
-import {sendChatMessage, fetchSpeechAudio, transcribeAudio, ChatMsg} from './api';
+import {sendChatMessage, fetchSpeechAudio, transcribeAudio, streamChatMessage, makeSentenceFlusher, ChatMsg} from './api';
 import {AvatarIcon} from './AvatarIcon';
 import {MessageContent} from './MessageContent';
 import type {MouthShape} from '../lipSync';
@@ -101,7 +101,7 @@ export const App: React.FC = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
-  const {mouthShape, isSpeaking, spokenText, currentSpeech, speak, replay, setMuted} =
+  const {mouthShape, isSpeaking, spokenText, currentSpeech, speak, replay, setMuted, beginStream} =
     useAudioLipSync();
 
   const isMobile = useIsMobile();
@@ -238,14 +238,52 @@ const toggleFullscreen = useCallback(() => {
     setIsThinking(true);
 
     try {
-      const {reply, imageUrl} = await sendChatMessage(conversationRef.current);
+      const session = beginStream();
+      // TTS requests run in parallel as sentences arrive, but we must enqueue
+      // them in the original order — chain promises so each enqueue waits for
+      // its predecessor's TTS even if a later sentence's TTS finishes first.
+      let chain: Promise<void> = Promise.resolve();
+      let firstSpoken = false;
+
+      const speakSentence = (sentence: string) => {
+        const ttsPromise = fetchSpeechAudio(sentence).catch((err) => {
+          console.error('TTS error:', err);
+          return null;
+        });
+        chain = chain.then(async () => {
+          const blob = await ttsPromise;
+          if (!blob) return;
+          if (!firstSpoken) {
+            firstSpoken = true;
+            setIsThinking(false);
+          }
+          session.enqueue(sentence, blob);
+        });
+      };
+
+      const flusher = makeSentenceFlusher(speakSentence);
+
+      let fullReply = '';
+      let imageUrl: string | undefined;
+
+      await streamChatMessage(conversationRef.current, {
+        onDelta: (delta) => flusher.push(delta),
+        onDone: (info) => {
+          fullReply = info.full;
+          imageUrl = info.imageUrl;
+        },
+        onError: (err) => {
+          throw err;
+        },
+      });
+
+      flusher.flush();
+      await chain;
+      await session.finish();
+
+      const reply = fullReply || '';
       conversationRef.current.push({role: 'assistant', content: reply});
-
-      const audioBlob = await fetchSpeechAudio(reply);
-      const audioUrl = URL.createObjectURL(audioBlob);
       setIsThinking(false);
-
-      await speak(reply, audioBlob);
 
       setMessages((prev) => [
         ...prev,
@@ -254,7 +292,6 @@ const toggleFullscreen = useCallback(() => {
           text: reply,
           sender: 'avatar',
           timestamp: new Date(),
-          audioUrl,
           imageUrl,
         },
       ]);
@@ -886,14 +923,22 @@ const toggleFullscreen = useCallback(() => {
     }
   }, []);
 
-  // Replay avatar audio with lipsync (mirrors the live speak() path).
-  const replayAudio = useCallback((msgId: number, text: string, audioUrl: string) => {
+  // Replay avatar audio with lipsync. Streamed chat replies don't keep an
+  // audioUrl (the per-sentence chunks were revoked after playback), so when
+  // none is provided we re-fetch a single full-text TTS and play that.
+  const replayAudio = useCallback((msgId: number, text: string, audioUrl?: string) => {
     if (playingMsgId === msgId) return; // already playing this one
     setPlayingMsgId(msgId);
-    replay(text, audioUrl).finally(() => {
-      setPlayingMsgId((cur) => (cur === msgId ? null : cur));
-    });
-  }, [playingMsgId, replay]);
+    const clear = () => setPlayingMsgId((cur) => (cur === msgId ? null : cur));
+    if (audioUrl) {
+      replay(text, audioUrl).finally(clear);
+      return;
+    }
+    fetchSpeechAudio(text)
+      .then((blob) => speak(text, blob))
+      .catch((err) => console.error('Replay TTS error:', err))
+      .finally(clear);
+  }, [playingMsgId, replay, speak]);
 
   const activeMouth = isSpeaking ? mouthShape : idleMouth;
 
@@ -1590,9 +1635,9 @@ const toggleFullscreen = useCallback(() => {
                   </div>
                 )}
                 <div style={styles.messageFooter}>
-                  {msg.sender === 'avatar' && msg.audioUrl && (
+                  {msg.sender === 'avatar' && msg.text && (
                     <button
-                      onClick={() => replayAudio(msg.id, msg.text, msg.audioUrl!)}
+                      onClick={() => replayAudio(msg.id, msg.text, msg.audioUrl)}
                       style={{
                         ...styles.replayButton,
                         ...(playingMsgId === msg.id ? styles.replayButtonPlaying : {}),
