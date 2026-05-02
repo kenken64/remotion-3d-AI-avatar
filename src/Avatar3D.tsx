@@ -538,6 +538,32 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
     setAvatarScale(size.y > 0 ? targetHeight / size.y : 1);
   }, [sceneClone]);
 
+  // Tone the PBR materials so skin and fabric show texture detail instead of
+  // a glossy plastic sheen. Ready Player Me exports tend to be slightly too
+  // shiny under a strong env map; we dial envMapIntensity down across the
+  // board and roughen the skin a touch.
+  useEffect(() => {
+    sceneClone.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      mats.forEach((m) => {
+        const std = m as THREE.MeshStandardMaterial;
+        if (!('envMapIntensity' in std)) return;
+        std.envMapIntensity = 0.45;
+        const isSkin = mesh.name === 'Wolf3D_Body' || mesh.name.startsWith('Wolf3D_Head');
+        if (isSkin) {
+          std.roughness = Math.min(1, (std.roughness ?? 0.7) + 0.15);
+          std.envMapIntensity = 0.3;
+        }
+        if (mesh.name === 'Wolf3D_Hair') {
+          std.envMapIntensity = 0.55;
+        }
+        std.needsUpdate = true;
+      });
+    });
+  }, [sceneClone]);
+
   // Patch the hair material with a procedural sway. Hair has no bones or
   // morph targets, so we displace vertices in the vertex shader by a wave
   // scaled by height above ~the scalp line — tips move, roots don't.
@@ -1010,7 +1036,13 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeak
   return (
     <Canvas
       style={{width: '100%', height: '100%'}}
-      gl={{antialias: true, alpha: true, toneMapping: THREE.ACESFilmicToneMapping}}
+      gl={{
+        antialias: true,
+        alpha: true,
+        toneMapping: THREE.ACESFilmicToneMapping,
+        toneMappingExposure: 0.78,
+        outputColorSpace: THREE.SRGBColorSpace,
+      }}
     >
       <FramedCamera position={cameraPos} target={cameraTarget} fov={fov} zoom={zoom} />
 
@@ -1019,15 +1051,16 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeak
       {/* Space background */}
       <SpaceBackground />
 
-      {/* Lighting — neutral key/fill so the realistic skin reads correctly,
-          plus a cool rim to integrate with the space scene. */}
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[2, 3, 4]} intensity={1.6} color="#ffffff" />
-      <directionalLight position={[-2.5, 1.5, 2]} intensity={0.55} color="#ffe8d4" />
-      <directionalLight position={[0, 1.5, -3]} intensity={0.9} color="#5577cc" />
-      <pointLight position={[0, -1, 3]} intensity={0.3} color="#ffffff" />
+      {/* Lighting — soft key/fill tuned so the PBR skin and fabric textures
+          read with detail instead of blowing out. Cool rim integrates the
+          avatar with the space scene. */}
+      <ambientLight intensity={0.18} />
+      <directionalLight position={[2, 3, 4]} intensity={0.85} color="#fff2e0" />
+      <directionalLight position={[-2.5, 1.5, 2]} intensity={0.25} color="#ffe2c8" />
+      <directionalLight position={[0, 1.5, -3]} intensity={0.55} color="#5577cc" />
+      <pointLight position={[0, -1, 3]} intensity={0.12} color="#ffffff" />
 
-      <Environment preset="studio" />
+      <Environment preset="apartment" environmentIntensity={0.55} />
 
       <Suspense fallback={<AvatarLoader />}>
         <GLBAvatar mouthShape={mouthShape} breatheY={breatheY} isSpeaking={isSpeaking} />
