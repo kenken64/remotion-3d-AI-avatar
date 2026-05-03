@@ -134,8 +134,15 @@ app.post('/api/chat-stream', async (req, res) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
+  // Abort upstream only if the *response* socket closes before we've sent
+  // res.end(). We can't use req.on('close') here: under Express 5 / Node 24
+  // it fires as soon as the request body is parsed, which would kill every
+  // stream before the first token.
   const upstream = new AbortController();
-  req.on('close', () => upstream.abort());
+  let responseEnded = false;
+  res.on('close', () => {
+    if (!responseEnded) upstream.abort();
+  });
 
   try {
     const {messages} = req.body;
@@ -216,6 +223,7 @@ app.post('/api/chat-stream', async (req, res) => {
 
     const imageUrl = await imagePromise;
     send('done', {full, imageUrl: imageUrl || undefined});
+    responseEnded = true;
     res.end();
   } catch (err: any) {
     console.error('Chat stream error:', err.message);
@@ -224,6 +232,7 @@ app.post('/api/chat-stream', async (req, res) => {
     } catch {
       /* socket already closed */
     }
+    responseEnded = true;
     res.end();
   }
 });

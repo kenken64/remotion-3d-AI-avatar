@@ -66,7 +66,6 @@ export const App: React.FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [breatheY, setBreatheY] = useState(0);
   const [playingMsgId, setPlayingMsgId] = useState<number | null>(null);
   const [isChatVisible, setIsChatVisible] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
@@ -97,7 +96,6 @@ export const App: React.FC = () => {
   const conversationRef = useRef<ChatMsg[]>(
     messages.map(m => ({role: m.sender === 'user' ? 'user' : 'assistant', content: m.text}))
   );
-  const breatheRef = useRef(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
@@ -194,25 +192,12 @@ const toggleFullscreen = useCallback(() => {
     return () => clearInterval(interval);
   }, [isSpeaking]);
 
-  // Breathing animation
-  useEffect(() => {
-    let running = true;
-    const tick = () => {
-      if (!running) return;
-      breatheRef.current += 1;
-      setBreatheY(Math.sin(breatheRef.current * 0.04) * 2);
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    return () => {
-      running = false;
-    };
-  }, []);
-
-  // Persist chat history to localStorage
+  // Persist chat history to localStorage. Strip imageUrl — DALL-E URLs are
+  // signed with a ~2h SAS token, so persisting them produces 403s on reload.
   useEffect(() => {
     try {
-      localStorage.setItem('avatar-chat-history', JSON.stringify(messages));
+      const persisted = messages.map(({imageUrl, ...rest}) => rest);
+      localStorage.setItem('avatar-chat-history', JSON.stringify(persisted));
     } catch { /* ignore quota errors */ }
   }, [messages]);
 
@@ -962,7 +947,7 @@ const toggleFullscreen = useCallback(() => {
             else { lastTapRef.current = now; }
           }}
         >
-          <Avatar3D mouthShape={activeMouth} breatheY={breatheY} isSpeaking={isSpeaking} isMobile={isMobile} zoom={cameraZoom} />
+          <Avatar3D mouthShape={activeMouth} isSpeaking={isSpeaking} isMobile={isMobile} zoom={cameraZoom} />
 
           {/* Floating scene controls — webcam + drawing pad toggles. Lives on the
               avatar scene (not the chat header) so each toggle visually couples

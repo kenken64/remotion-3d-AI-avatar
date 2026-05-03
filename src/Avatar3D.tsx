@@ -1,6 +1,6 @@
 import React, {useRef, useMemo, useEffect, useState, Suspense} from 'react';
 import {Canvas, useFrame} from '@react-three/fiber';
-import {Environment, PerspectiveCamera, Stars, useGLTF, useTexture, Html, useProgress} from '@react-three/drei';
+import {Environment, PerspectiveCamera, Stars, Stats, useGLTF, useTexture, Html, useProgress} from '@react-three/drei';
 import * as THREE from 'three';
 import type {MouthShape} from './lipSync';
 
@@ -45,6 +45,7 @@ function cloneSkeleton(source: THREE.Object3D): THREE.Object3D {
 // Matches `base: '/remotion'` in vite.config.ts.
 const AVATAR_URL = '/remotion/avatar.glb';
 const BACKGROUND_URL = '/remotion/background.webp';
+const ENV_HDR_URL = '/remotion/hdri/lebombo_1k.hdr';
 useGLTF.preload(AVATAR_URL);
 useTexture.preload(BACKGROUND_URL);
 
@@ -465,7 +466,7 @@ function spinBobY(progress: number) {
   return Math.sin(progress * Math.PI) * 0.06;
 }
 
-function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; breatheY: number; isSpeaking: boolean}) {
+function GLBAvatar({mouthShape, isSpeaking}: {mouthShape: MouthShape; isSpeaking: boolean}) {
   const groupRef = useRef<THREE.Group>(null);
   const idleRef = useRef(0);
   const [avatarScale, setAvatarScale] = useState(1);
@@ -509,6 +510,19 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
     phase: 'idle' as 'idle' | 'closing' | 'opening',
     timer: 0,
     nextBlinkIn: Math.random() * 3 + 1.5,
+  });
+
+  // Eye saccade state. yaw/pitch are the smoothed direction the eyes are
+  // currently looking (in radians, +yaw=looking-right from viewer, +pitch=down).
+  // Targets jump to a new random offset every 0.4–1.5s; the smoother slerps
+  // toward them at ~40ms which reads as a real saccade. Pitch is biased
+  // slightly up so the gaze rests on the camera rather than your collar.
+  const eyeRef = useRef({
+    yaw: 0,
+    pitch: -0.05,
+    tgtYaw: 0,
+    tgtPitch: -0.05,
+    nextIn: 0.5 + Math.random() * 1.0,
   });
 
   const {scene} = useGLTF(AVATAR_URL);
@@ -917,9 +931,46 @@ function GLBAvatar({mouthShape, breatheY, isSpeaking}: {mouthShape: MouthShape; 
       }
     }
 
+    // Eye saccades — pick a new gaze target every 0.4–1.5s and slerp toward
+    // it. Real eyes never sit still; without this the avatar reads as dead.
+    const e = eyeRef.current;
+    e.nextIn -= delta;
+    if (e.nextIn <= 0) {
+      e.tgtYaw = (Math.random() - 0.5) * 0.4;       // ±0.2 rad ≈ ±11°
+      e.tgtPitch = -0.05 + (Math.random() - 0.5) * 0.25; // bias slightly up
+      e.nextIn = 0.4 + Math.random() * 1.4;
+    }
+    const eyeLerp = Math.min(1, delta * 25);
+    e.yaw += (e.tgtYaw - e.yaw) * eyeLerp;
+    e.pitch += (e.tgtPitch - e.pitch) * eyeLerp;
+
     // Lerp every relevant morph influence toward its target — a hard switch
     // looks fine on a cartoon mouth but jarring on a realistic face.
     const targetWeights = computeTargetWeights(mouthShape, isSpeaking, b.amount);
+    // Map eye yaw/pitch to morph weights. We write both ARKit (per-eye) and
+    // simple (combined) names; the morph applier silently skips those that
+    // don't exist on this rig.
+    const yawAmt = Math.min(1, Math.abs(e.yaw) / 0.35);
+    const pitchAmt = Math.min(1, Math.abs(e.pitch) / 0.25);
+    if (e.yaw > 0) {
+      // Looking to viewer's right: left eye rotates outward, right eye inward.
+      targetWeights.eyeLookOutLeft = yawAmt;
+      targetWeights.eyeLookInRight = yawAmt;
+      targetWeights.eyesLookRight = yawAmt;
+    } else {
+      targetWeights.eyeLookInLeft = yawAmt;
+      targetWeights.eyeLookOutRight = yawAmt;
+      targetWeights.eyesLookLeft = yawAmt;
+    }
+    if (e.pitch < 0) {
+      targetWeights.eyeLookUpLeft = pitchAmt;
+      targetWeights.eyeLookUpRight = pitchAmt;
+      targetWeights.eyesLookUp = pitchAmt;
+    } else {
+      targetWeights.eyeLookDownLeft = pitchAmt;
+      targetWeights.eyeLookDownRight = pitchAmt;
+      targetWeights.eyesLookDown = pitchAmt;
+    }
     const lerpFactor = Math.min(1, delta * 14);
     for (const mesh of morphMeshes) {
       const dict = mesh.morphTargetDictionary!;
@@ -1022,20 +1073,42 @@ function FramedCamera({position, target, fov, zoom = 1}: {
 // ========== Main 3D Scene ==========
 interface Avatar3DProps {
   mouthShape: MouthShape;
-  breatheY: number;
   isSpeaking?: boolean;
   isMobile?: boolean;
   zoom?: number;
 }
 
-export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeaking = false, isMobile = false, zoom = 1}) => {
+export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, isSpeaking = false, isMobile = false, zoom = 1}) => {
   const cameraPos: [number, number, number] = isMobile ? [0, 1.95, 2.15] : [0, 1.8, 1.95];
   const cameraTarget: [number, number, number] = isMobile ? [0, 1.7, 0] : [0, 1.55, 0];
   const fov = isMobile ? 26 : 22;
 
+  // drei's <Stats /> renders to a fixed top-left DOM node by default. Mount
+  // it inside our own container so we can place it bottom-right and scale
+  // up the panel for readability.
+  const statsRef = useRef<HTMLDivElement>(null);
+  const [statsParent, setStatsParent] = useState<HTMLDivElement | null>(null);
+  useEffect(() => setStatsParent(statsRef.current), []);
+
   return (
+    <>
+    <div
+      ref={statsRef}
+      style={{
+        position: 'absolute',
+        right: 12,
+        bottom: 12,
+        width: 0,
+        height: 0,
+        zIndex: 10,
+        pointerEvents: 'none',
+      }}
+    />
     <Canvas
       style={{width: '100%', height: '100%'}}
+      // Cap DPR at 1.5 — HiDPI displays otherwise render at 2x or 3x screen
+      // pixels which dominates GPU cost for no real visual gain on a face.
+      dpr={[1, 1.5]}
       gl={{
         antialias: true,
         alpha: true,
@@ -1060,11 +1133,14 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({mouthShape, breatheY, isSpeak
       <directionalLight position={[0, 1.5, -3]} intensity={0.55} color="#5577cc" />
       <pointLight position={[0, -1, 3]} intensity={0.12} color="#ffffff" />
 
-      <Environment preset="apartment" environmentIntensity={0.55} />
-
       <Suspense fallback={<AvatarLoader />}>
-        <GLBAvatar mouthShape={mouthShape} breatheY={breatheY} isSpeaking={isSpeaking} />
+        <Environment files={ENV_HDR_URL} environmentIntensity={0.55} />
+        <GLBAvatar mouthShape={mouthShape} isSpeaking={isSpeaking} />
       </Suspense>
+
+      {statsParent && <Stats parent={{current: statsParent}} className="avatar-stats" />}
+
     </Canvas>
+    </>
   );
 };
