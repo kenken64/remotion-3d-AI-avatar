@@ -4,6 +4,8 @@ import {Environment, PerspectiveCamera, Stars, Stats, useGLTF, useTexture, Html,
 import * as THREE from 'three';
 import type {MouthShape} from './lipSync';
 
+const AVATAR_NAME = (import.meta.env?.VITE_AVATAR_NAME as string | undefined) || 'kenken64';
+
 // Inlined version of three/examples/jsm/utils/SkeletonUtils.clone(). Uses our
 // deduped `three` instance — importing from the examples path pulls in a 2nd
 // copy of three.js (Vite's dedupe doesn't reach the examples/jsm subtree),
@@ -1018,7 +1020,7 @@ function AvatarLoader() {
           minWidth: 160,
         }}
       >
-        <div style={{fontWeight: 600, marginBottom: 8}}>Loading kenken64…</div>
+        <div style={{fontWeight: 600, marginBottom: 8}}>Loading {AVATAR_NAME}…</div>
         <div
           style={{
             width: '100%',

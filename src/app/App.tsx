@@ -8,6 +8,12 @@ import type {MouthShape} from '../lipSync';
 
 const MOBILE_BREAKPOINT = 768;
 
+const AVATAR_NAME = (import.meta.env?.VITE_AVATAR_NAME as string | undefined) || 'kenken64';
+// Wake-word: accept the configured name plus common phonetic mishearings of
+// "kenken". Speech recognition rarely transcribes trailing digits reliably,
+// so we strip them when adding the configured name to the regex.
+const AVATAR_WAKE_TOKEN = AVATAR_NAME.toLowerCase().replace(/[^a-z]/g, '');
+
 const useMediaQuery = (query: string): boolean => {
   const getMatch = () => {
     if (typeof window === 'undefined') return false;
@@ -843,7 +849,8 @@ const toggleFullscreen = useCallback(() => {
           // webcam off — ignore so listener keeps running
         }
         // Talk wake phrase — accept common phonetic mishearings of "kenken".
-        if (/\b(hey|hi|ok)\s+(ken|kenn|kenny|kent|kenken|kenken64)\b/.test(transcript)) {
+        const wakeRe = new RegExp(`\\b(hey|hi|ok)\\s+(ken|kenn|kenny|kent|kenken|kenken64|${AVATAR_WAKE_TOKEN})\\b`);
+        if (wakeRe.test(transcript)) {
           triggered = true; // session-local; reset on next onstart
           toggleRecordingRef.current();
           return;
@@ -1295,8 +1302,8 @@ const toggleFullscreen = useCallback(() => {
                   <button
                     onClick={sendDrawingToAI}
                     disabled={!drawingHasInk || busy}
-                    aria-label="Show kenken64 this drawing"
-                    title="Show kenken64"
+                    aria-label={`Show ${AVATAR_NAME} this drawing`}
+                    title={`Show ${AVATAR_NAME}`}
                     style={{
                       padding: '4px 10px',
                       borderRadius: 6,
@@ -1308,7 +1315,7 @@ const toggleFullscreen = useCallback(() => {
                       fontWeight: 600,
                     }}
                   >
-                    Show kenken64
+                    Show {AVATAR_NAME}
                   </button>
                 </div>
               </div>
@@ -1401,7 +1408,7 @@ const toggleFullscreen = useCallback(() => {
             }}
           />
           <AvatarIcon size={32} />
-          <h2 style={styles.headerTitle}>kenken64</h2>
+          <h2 style={styles.headerTitle}>{AVATAR_NAME}</h2>
           <button
             onClick={() => setPanelMode((m) => (m === 'chat' ? 'ptt' : 'chat'))}
             style={{...styles.headerIconButton, marginLeft: 8}}
@@ -1578,7 +1585,7 @@ const toggleFullscreen = useCallback(() => {
                 }}
               >
                 {msg.sender === 'avatar' && (
-                  <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> kenken64</span>
+                  <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> {AVATAR_NAME}</span>
                 )}
                 {msg.sender === 'user' && (
                   <span style={styles.userMsgLabel}>You</span>
@@ -1676,7 +1683,7 @@ const toggleFullscreen = useCallback(() => {
           {isThinking && (
             <div style={{...styles.messageBubble, ...styles.avatarMessage}}>
               <div style={{...styles.messageContent, ...styles.avatarContent}}>
-                <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> kenken64</span>
+                <span style={styles.avatarMsgLabel}><AvatarIcon size={18} /> {AVATAR_NAME}</span>
                 <div style={styles.typingIndicator}>
                   <div style={styles.typingDot} />
                   <div style={{...styles.typingDot, animationDelay: '0.15s'}} />
@@ -1831,7 +1838,7 @@ const toggleFullscreen = useCallback(() => {
                 }}
               />
               <AvatarIcon size={28} />
-              <h2 style={{...styles.headerTitle, fontSize: 16}}>kenken64</h2>
+              <h2 style={{...styles.headerTitle, fontSize: 16}}>{AVATAR_NAME}</h2>
               <button
                 onClick={() => setWakeEnabled((w) => !w)}
                 style={{
