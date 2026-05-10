@@ -309,9 +309,13 @@ app.post('/api/image', async (req, res) => {
 });
 
 // Text-to-speech
+// Voice can be overridden per-request; falls back to TTS_VOICE env var,
+// then 'onyx' (male). Set TTS_VOICE=nova (or shimmer/alloy) for female.
+const DEFAULT_TTS_VOICE = process.env.TTS_VOICE ?? 'onyx';
+
 app.post('/api/tts', async (req, res) => {
   try {
-    const {text, voice = 'onyx'} = req.body;
+    const {text, voice = DEFAULT_TTS_VOICE} = req.body;
 
     const mp3 = await openai.audio.speech.create({
       model: 'tts-1',
