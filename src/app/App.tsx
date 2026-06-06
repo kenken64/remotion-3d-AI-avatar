@@ -53,7 +53,28 @@ interface ChatMessage {
   audioUrl?: string; // object URL for TTS audio replay
   imageUrl?: string; // generated image URL (e.g. DALL-E)
   translation?: string; // cached translation (auto-detected direction)
+  attachment?: {kind: 'image' | 'document'; name: string; dataUrl?: string}; // file the user attached
 }
+
+// A file the user picked but hasn't sent yet. `data` is base64 (no data: prefix);
+// `dataUrl` is the full data: URL used to preview images inline.
+interface PendingAttachment {
+  kind: 'image' | 'document';
+  name: string;
+  mediaType: string;
+  data: string;
+  dataUrl: string;
+  size: number;
+}
+
+// Attachment limits/types must mirror what the Bedrock Converse API accepts (see
+// server/index.ts). Images: PNG/JPEG/GIF/WEBP ≤ 3.75MB. Documents ≤ 4.5MB.
+const ACCEPTED_FILE_TYPES =
+  'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/csv,text/markdown,text/html,.pdf,.txt,.md,.markdown,.csv,.html,.htm,.doc,.docx,.xls,.xlsx';
+const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp']);
+const SUPPORTED_DOC_EXTENSIONS = new Set(['pdf', 'csv', 'doc', 'docx', 'xls', 'xlsx', 'html', 'htm', 'txt', 'md', 'markdown']);
+const MAX_IMAGE_BYTES = 3.75 * 1024 * 1024;
+const MAX_DOC_BYTES = 4.5 * 1024 * 1024;
 
 export const App: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -69,6 +90,8 @@ export const App: React.FC = () => {
     return [];
   });
   const [inputText, setInputText] = useState('');
+  const [attachment, setAttachment] = useState<PendingAttachment | null>(null);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const [isThinking, setIsThinking] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -98,6 +121,7 @@ export const App: React.FC = () => {
   const musicTimerRef = useRef<number | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageIdRef = useRef(messages.reduce((m, x) => Math.max(m, x.id), 0));
   const conversationRef = useRef<ChatMsg[]>(
     messages.map(m => ({role: m.sender === 'user' ? 'user' : 'assistant', content: m.text}))
@@ -202,7 +226,7 @@ const toggleFullscreen = useCallback(() => {
   // signed with a ~2h SAS token, so persisting them produces 403s on reload.
   useEffect(() => {
     try {
-      const persisted = messages.map(({imageUrl, ...rest}) => rest);
+      const persisted = messages.map(({imageUrl, attachment, ...rest}) => rest);
       localStorage.setItem('avatar-chat-history', JSON.stringify(persisted));
     } catch { /* ignore quota errors */ }
   }, [messages]);
@@ -212,20 +236,29 @@ const toggleFullscreen = useCallback(() => {
     chatEndRef.current?.scrollIntoView({behavior: 'smooth'});
   }, [messages]);
 
-  const sendMessage = useCallback(async (text: string) => {
-    if (!text.trim() || isThinking || isSpeaking) return;
+  const sendMessage = useCallback(async (text: string, att?: PendingAttachment | null) => {
+    if ((!text.trim() && !att) || isThinking || isSpeaking) return;
+
+    // When a file is sent with no caption, supply a default prompt so the turn
+    // (and the replayed history) always has non-empty text for the model.
+    const effectiveText =
+      text.trim() ||
+      (att ? (att.kind === 'image' ? "What's in this image?" : 'Can you take a look at this file?') : '');
 
     setMessages((prev) => [
       ...prev,
       {
         id: ++messageIdRef.current,
-        text,
+        text: effectiveText,
         sender: 'user',
         timestamp: new Date(),
+        attachment: att
+          ? {kind: att.kind, name: att.name, dataUrl: att.kind === 'image' ? att.dataUrl : undefined}
+          : undefined,
       },
     ]);
 
-    conversationRef.current.push({role: 'user', content: text});
+    conversationRef.current.push({role: 'user', content: effectiveText});
     setIsThinking(true);
 
     try {
@@ -257,16 +290,21 @@ const toggleFullscreen = useCallback(() => {
       let fullReply = '';
       let imageUrl: string | undefined;
 
-      await streamChatMessage(conversationRef.current, {
-        onDelta: (delta) => flusher.push(delta),
-        onDone: (info) => {
-          fullReply = info.full;
-          imageUrl = info.imageUrl;
+      await streamChatMessage(
+        conversationRef.current,
+        {
+          onDelta: (delta) => flusher.push(delta),
+          onDone: (info) => {
+            fullReply = info.full;
+            imageUrl = info.imageUrl;
+          },
+          onError: (err) => {
+            throw err;
+          },
         },
-        onError: (err) => {
-          throw err;
-        },
-      });
+        undefined,
+        att ? {kind: att.kind, name: att.name, mediaType: att.mediaType, data: att.data} : undefined,
+      );
 
       flusher.flush();
       await chain;
@@ -306,10 +344,13 @@ const toggleFullscreen = useCallback(() => {
 
   const handleSend = useCallback(() => {
     const trimmed = inputText.trim();
-    if (!trimmed) return;
+    if (!trimmed && !attachment) return;
+    const att = attachment;
     setInputText('');
-    sendMessage(trimmed);
-  }, [inputText, sendMessage]);
+    setAttachment(null);
+    setAttachError(null);
+    sendMessage(trimmed, att);
+  }, [inputText, attachment, sendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -317,6 +358,68 @@ const toggleFullscreen = useCallback(() => {
       handleSend();
     }
   };
+
+  // File attachment: open the picker, validate the chosen file, and read it to
+  // base64 so it can ride along with the next chat message.
+  const handleAttachClick = useCallback(() => {
+    setAttachError(null);
+    fileInputRef.current?.click();
+  }, []);
+
+  const clearAttachment = useCallback(() => {
+    setAttachment(null);
+    setAttachError(null);
+  }, []);
+
+  const handleFileSelected = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-picking the same file
+    if (!file) return;
+
+    const isImage = file.type.startsWith('image/');
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+
+    if (isImage) {
+      if (!SUPPORTED_IMAGE_TYPES.has(file.type)) {
+        setAttachError('Unsupported image type — use PNG, JPEG, GIF, or WEBP.');
+        return;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        setAttachError('Image is too large (max 3.75 MB).');
+        return;
+      }
+    } else {
+      if (!SUPPORTED_DOC_EXTENSIONS.has(ext)) {
+        setAttachError('Unsupported file type.');
+        return;
+      }
+      if (file.size > MAX_DOC_BYTES) {
+        setAttachError('File is too large (max 4.5 MB).');
+        return;
+      }
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => setAttachError('Could not read that file.');
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const data = dataUrl.split(',')[1] || '';
+      if (!data) {
+        setAttachError('Could not read that file.');
+        return;
+      }
+      setAttachError(null);
+      setAttachment({
+        kind: isImage ? 'image' : 'document',
+        name: file.name,
+        mediaType: file.type || '',
+        data,
+        dataUrl,
+        size: file.size,
+      });
+    };
+    reader.readAsDataURL(file);
+  }, []);
 
   // Toggle mic recording: click to start, click again to stop
   const toggleRecording = useCallback(async () => {
@@ -936,6 +1039,14 @@ const toggleFullscreen = useCallback(() => {
 
   return (
     <div style={styles.container}>
+      {/* Hidden file input shared by the desktop + mobile attach buttons */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept={ACCEPTED_FILE_TYPES}
+        onChange={handleFileSelected}
+        style={{display: 'none'}}
+      />
       {/* Left: 3D Avatar */}
       <div style={isChatVisible ? styles.avatarPanel : styles.avatarPanelFull}>
         <div
@@ -1591,6 +1702,20 @@ const toggleFullscreen = useCallback(() => {
                   <span style={styles.userMsgLabel}>You</span>
                 )}
                 <MessageContent text={msg.text} asMarkdown={msg.sender === 'avatar'} baseStyle={styles.messageText} />
+                {msg.attachment && (
+                  msg.attachment.kind === 'image' && msg.attachment.dataUrl ? (
+                    <img
+                      src={msg.attachment.dataUrl}
+                      alt={msg.attachment.name}
+                      style={{marginTop: 8, maxWidth: '100%', borderRadius: 12, display: 'block'}}
+                    />
+                  ) : (
+                    <div style={styles.messageFileChip}>
+                      <span aria-hidden>📄</span>
+                      <span style={styles.messageFileName}>{msg.attachment.name}</span>
+                    </div>
+                  )
+                )}
                 {msg.imageUrl && (
                   <a href={msg.imageUrl} target="_blank" rel="noreferrer">
                     <img
@@ -1704,7 +1829,39 @@ const toggleFullscreen = useCallback(() => {
         </div>
 
         <div style={styles.inputArea}>
+          {(attachment || attachError) && (
+            <div style={styles.attachmentBar}>
+              {attachment && (
+                <div style={styles.attachmentChip}>
+                  {attachment.kind === 'image' ? (
+                    <img src={attachment.dataUrl} alt="" style={styles.attachmentThumb} />
+                  ) : (
+                    <span style={styles.attachmentDocIcon} aria-hidden>📄</span>
+                  )}
+                  <span style={styles.attachmentName} title={attachment.name}>{attachment.name}</span>
+                  <button onClick={clearAttachment} style={styles.attachmentRemove} aria-label="Remove attachment" title="Remove">×</button>
+                </div>
+              )}
+              {attachError && <span style={styles.attachmentError}>{attachError}</span>}
+            </div>
+          )}
           <div style={styles.inputWrapper}>
+            {/* Attach button */}
+            <button
+              onClick={handleAttachClick}
+              disabled={isThinking || isSpeaking}
+              aria-label="Attach a file"
+              title="Attach a file"
+              style={{
+                ...styles.micButton,
+                ...(isThinking || isSpeaking ? styles.micButtonDisabled : styles.micButtonIdle),
+                ...(attachment ? styles.attachButtonActive : null),
+              }}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
             <textarea
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
@@ -1758,10 +1915,10 @@ const toggleFullscreen = useCallback(() => {
             {/* Send button */}
             <button
               onClick={handleSend}
-              disabled={!inputText.trim() || isThinking || isSpeaking}
+              disabled={(!inputText.trim() && !attachment) || isThinking || isSpeaking}
               style={{
                 ...styles.sendButton,
-                ...(inputText.trim() && !isThinking && !isSpeaking
+                ...((inputText.trim() || attachment) && !isThinking && !isSpeaking
                   ? styles.sendButtonActive
                   : styles.sendButtonDisabled),
               }}
@@ -1877,6 +2034,16 @@ const toggleFullscreen = useCallback(() => {
                 <div key={msg.id} style={{...styles.messageBubble, ...(msg.sender === 'user' ? styles.userMessage : styles.avatarMessage)}}>
                   <div style={{...styles.messageContent, ...(msg.sender === 'user' ? styles.userContent : styles.avatarContent)}}>
                     <MessageContent text={msg.text} asMarkdown={msg.sender === 'avatar'} baseStyle={styles.messageText} />
+                    {msg.attachment && (
+                      msg.attachment.kind === 'image' && msg.attachment.dataUrl ? (
+                        <img src={msg.attachment.dataUrl} alt={msg.attachment.name} style={{marginTop: 8, maxWidth: '100%', borderRadius: 12, display: 'block'}} />
+                      ) : (
+                        <div style={styles.messageFileChip}>
+                          <span aria-hidden>📄</span>
+                          <span style={styles.messageFileName}>{msg.attachment.name}</span>
+                        </div>
+                      )
+                    )}
                     {msg.imageUrl && (
                       <a href={msg.imageUrl} target="_blank" rel="noreferrer">
                         <img src={msg.imageUrl} alt="generated" style={{marginTop: 8, maxWidth: '100%', borderRadius: 12, display: 'block'}} />
@@ -1912,7 +2079,28 @@ const toggleFullscreen = useCallback(() => {
             </div>
 
             <div style={{padding: 10, borderTop: '1px solid rgba(255,255,255,0.04)'}}>
+              {(attachment || attachError) && (
+                <div style={styles.attachmentBar}>
+                  {attachment && (
+                    <div style={styles.attachmentChip}>
+                      {attachment.kind === 'image' ? (
+                        <img src={attachment.dataUrl} alt="" style={styles.attachmentThumb} />
+                      ) : (
+                        <span style={styles.attachmentDocIcon} aria-hidden>📄</span>
+                      )}
+                      <span style={styles.attachmentName} title={attachment.name}>{attachment.name}</span>
+                      <button onClick={clearAttachment} style={styles.attachmentRemove} aria-label="Remove attachment" title="Remove">×</button>
+                    </div>
+                  )}
+                  {attachError && <span style={styles.attachmentError}>{attachError}</span>}
+                </div>
+              )}
               <div style={{display: 'flex', gap: 8, alignItems: 'flex-end'}}>
+                <button onClick={handleAttachClick} disabled={isThinking || isSpeaking} aria-label="Attach a file" title="Attach a file" style={{...styles.micButton, ...(isThinking || isSpeaking ? styles.micButtonDisabled : styles.micButtonIdle), ...(attachment ? styles.attachButtonActive : null)}}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                  </svg>
+                </button>
                 <textarea
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
@@ -1922,7 +2110,7 @@ const toggleFullscreen = useCallback(() => {
                   rows={1}
                   disabled={isThinking || isSpeaking}
                 />
-                <button onClick={handleSend} disabled={!inputText.trim() || isThinking || isSpeaking} style={{...styles.sendButton, ...(inputText.trim() ? styles.sendButtonActive : styles.sendButtonDisabled)}}>
+                <button onClick={handleSend} disabled={(!inputText.trim() && !attachment) || isThinking || isSpeaking} style={{...styles.sendButton, ...((inputText.trim() || attachment) ? styles.sendButtonActive : styles.sendButtonDisabled)}}>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="22" y1="2" x2="11" y2="13" />
                     <polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -2480,6 +2668,84 @@ const baseStyles: Record<string, React.CSSProperties> = {
   inputArea: {
     padding: '14px',
     borderTop: '1px solid rgba(255,255,255,0.06)',
+  },
+  attachmentBar: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 8,
+  },
+  attachmentChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    maxWidth: '100%',
+    background: '#1a1a2e',
+    border: '1px solid rgba(255,255,255,0.12)',
+    borderRadius: 12,
+    padding: '6px 8px',
+  },
+  attachmentThumb: {
+    width: 32,
+    height: 32,
+    objectFit: 'cover',
+    borderRadius: 6,
+    flexShrink: 0,
+  },
+  attachmentDocIcon: {
+    fontSize: 18,
+    lineHeight: 1,
+    flexShrink: 0,
+  },
+  attachmentName: {
+    fontSize: 13,
+    color: '#e0e0e0',
+    maxWidth: 200,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  attachmentRemove: {
+    width: 20,
+    height: 20,
+    flexShrink: 0,
+    border: 'none',
+    borderRadius: 6,
+    background: 'rgba(255,255,255,0.08)',
+    color: '#ccc',
+    cursor: 'pointer',
+    fontSize: 16,
+    lineHeight: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  attachmentError: {
+    fontSize: 12.5,
+    color: '#fca5a5',
+  },
+  attachButtonActive: {
+    background: '#537fe7',
+    color: '#fff',
+  },
+  messageFileChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+    background: 'rgba(255,255,255,0.06)',
+    border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 10,
+    padding: '6px 10px',
+  },
+  messageFileName: {
+    fontSize: 13,
+    color: '#e0e0e0',
+    maxWidth: 220,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   },
   inputWrapper: {
     display: 'flex',

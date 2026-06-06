@@ -3,16 +3,29 @@ export interface ChatMsg {
   content: string;
 }
 
+// A file the user attached to a chat turn. `data` is base64-encoded file bytes
+// (no `data:` prefix). The server turns it into a Bedrock Converse image or
+// document content block on the current user turn.
+export interface ChatAttachment {
+  kind: 'image' | 'document';
+  name: string; // original filename
+  mediaType: string; // MIME type, e.g. image/png or application/pdf
+  data: string; // base64-encoded bytes
+}
+
 export interface ChatReply {
   reply: string;
   imageUrl?: string;
 }
 
-export async function sendChatMessage(messages: ChatMsg[]): Promise<ChatReply> {
+export async function sendChatMessage(
+  messages: ChatMsg[],
+  attachment?: ChatAttachment,
+): Promise<ChatReply> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({messages}),
+    body: JSON.stringify({messages, attachment}),
   });
 
   if (!res.ok) {
@@ -60,11 +73,12 @@ export async function streamChatMessage(
   messages: ChatMsg[],
   handlers: StreamHandlers,
   signal?: AbortSignal,
+  attachment?: ChatAttachment,
 ): Promise<void> {
   const res = await fetch('/api/chat-stream', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({messages}),
+    body: JSON.stringify({messages, attachment}),
     signal,
   });
 

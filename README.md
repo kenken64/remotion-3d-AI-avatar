@@ -38,8 +38,8 @@ A browser-based AI avatar built with React, Vite, React Three Fiber, and Remotio
 ### Prerequisites
 
 - Node.js 18+
-- OpenAI API key
-- Optional OpenAI-compatible chat endpoint if you do not want chat completions to use the default local OpenClaw-compatible URL
+- An **Amazon Bedrock API key** for the chat brain (used as a Bearer token against the Bedrock Converse API). Long-term keys (`ABSK…`) work across regions; short-term keys (`bedrock-api-key-…`) are region-locked and expire (~12h).
+- An **OpenAI API key** for voice + image features (TTS, Whisper transcription, DALL·E image generation, and webcam/sketch vision). Bedrock does not provide these. Text chat works without it.
 
 ### Installation
 

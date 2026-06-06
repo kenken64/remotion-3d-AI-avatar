@@ -3,12 +3,19 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import http from 'http';
 import OpenAI, {toFile} from 'openai';
+import {
+  BedrockRuntimeClient,
+  ConverseCommand,
+  ConverseStreamCommand,
+} from '@aws-sdk/client-bedrock-runtime';
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json({limit: '10mb'}));
+// Raised from 10mb to fit base64-encoded file attachments (an image/document
+// can be up to ~4.5MB raw, ~6MB base64, plus conversation history).
+app.use(express.json({limit: '25mb'}));
 
 // Tailscale funnel strips the /api path prefix before forwarding here.
 // Re-add it so the routes below match in both cases.
@@ -23,31 +30,168 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Chat goes directly to ttyproxy's Ollama-compatible endpoint, bypassing
-// OpenClaw to avoid ~30s of per-turn agent prep. ttyproxy fronts Claude Code
-// CLI, so the model id matches what `openclaw plugins` exposes for ollama.
-// chatClient is kept for the optional VISION_USE_OPENCLAW path below.
-const chatClient = new OpenAI({
-  baseURL: process.env.CHAT_BASE_URL || 'http://127.0.0.1:18789/v1',
-  apiKey: process.env.CHAT_API_KEY || process.env.OPENAI_API_KEY,
-});
-const TTYPROXY_BASE_URL = process.env.TTYPROXY_BASE_URL || 'http://127.0.0.1:11435';
-const CHAT_MODEL = process.env.CHAT_MODEL || 'claude-code:latest';
+// Chat (the avatar's "brain") runs on Amazon Bedrock via the native Converse
+// API. We authenticate with a Bedrock API key (CHAT_API_KEY) passed as a Bearer
+// token — no AWS credentials or SigV4 signing required. BEDROCK_REGION selects
+// the runtime region and CHAT_MODEL selects the model/inference-profile id, e.g.
+// global.anthropic.claude-opus-4-5-20251101-v1:0 (a "global." profile routes
+// across regions, so it is reachable from ap-southeast-1).
+const BEDROCK_REGION = process.env.BEDROCK_REGION || 'ap-southeast-1';
+const CHAT_MODEL =
+  process.env.CHAT_MODEL || 'global.anthropic.claude-opus-4-5-20251101-v1:0';
 const AVATAR_NAME = process.env.VITE_AVATAR_NAME || 'kenken64';
+
+const bedrock = new BedrockRuntimeClient({
+  region: BEDROCK_REGION,
+  token: {token: process.env.CHAT_API_KEY || ''},
+  authSchemePreference: ['httpBearerAuth'],
+});
 
 type ChatMsg = {role: string; content: string};
 
-async function ollamaChat(messages: ChatMsg[]): Promise<string> {
-  const res = await fetch(`${TTYPROXY_BASE_URL}/api/chat`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({model: CHAT_MODEL, messages, stream: false}),
-  });
-  if (!res.ok) {
-    throw new Error(`ttyproxy ${res.status}: ${await res.text().catch(() => '')}`);
+// A file attachment sent alongside a chat turn. `data` is base64-encoded bytes.
+type ChatAttachment = {
+  kind: 'image' | 'document';
+  name: string;
+  mediaType: string;
+  data: string;
+};
+
+// Bedrock Converse content-block constraints (see AWS Converse API reference).
+const IMAGE_FORMATS = new Set(['png', 'jpeg', 'gif', 'webp']);
+const DOC_FORMATS = new Set([
+  'pdf', 'csv', 'doc', 'docx', 'xls', 'xlsx', 'html', 'txt', 'md',
+]);
+// Filename-extension aliases → canonical Bedrock document format.
+const DOC_EXT_ALIASES: Record<string, string> = {markdown: 'md', htm: 'html'};
+const DOC_MIME_TO_FORMAT: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'text/csv': 'csv',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'text/html': 'html',
+  'text/plain': 'txt',
+  'text/markdown': 'md',
+};
+const MAX_IMAGE_BYTES = 3.75 * 1024 * 1024;
+const MAX_DOC_BYTES = 4.5 * 1024 * 1024;
+
+// Bedrock document names allow only alphanumerics, single spaces, hyphens,
+// parentheses and square brackets (1–200 chars, no extension/dots).
+function safeDocName(raw: string): string {
+  const cleaned = (raw || '')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^A-Za-z0-9\-()[\] ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200);
+  return cleaned.length ? cleaned : 'document';
+}
+
+// Convert an incoming attachment into a Bedrock Converse content block. Returns
+// null (and logs) for missing / oversized / unsupported attachments, so a bad
+// attachment degrades to a text-only turn instead of failing the whole reply.
+function attachmentToBlock(att: ChatAttachment): any | null {
+  if (!att || typeof att.data !== 'string' || !att.data) return null;
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(att.data, 'base64');
+  } catch {
+    return null;
   }
-  const data = (await res.json()) as {message?: {content?: string}};
-  return data?.message?.content ?? '';
+  if (!bytes.length) return null;
+
+  if (att.kind === 'image') {
+    if (bytes.length > MAX_IMAGE_BYTES) {
+      console.warn(`[attach] image too large (${bytes.length}B), skipping`);
+      return null;
+    }
+    const format = (att.mediaType || '')
+      .toLowerCase()
+      .replace(/^image\//, '')
+      .replace('jpg', 'jpeg');
+    if (!IMAGE_FORMATS.has(format)) {
+      console.warn(`[attach] unsupported image type "${att.mediaType}", skipping`);
+      return null;
+    }
+    return {image: {format, source: {bytes}}};
+  }
+
+  if (bytes.length > MAX_DOC_BYTES) {
+    console.warn(`[attach] document too large (${bytes.length}B), skipping`);
+    return null;
+  }
+  // Resolve the document format. Prefer the filename extension — it is the most
+  // reliable signal (these enum values ARE the extensions, and browsers report
+  // inconsistent MIME types, e.g. .csv as application/vnd.ms-excel) — then fall
+  // back to the declared MIME type. att.name is guarded in case it is absent.
+  const ext = (typeof att.name === 'string' ? att.name.split('.').pop() || '' : '').toLowerCase();
+  const normExt = DOC_EXT_ALIASES[ext] || ext;
+  let format = DOC_FORMATS.has(normExt) ? normExt : '';
+  if (!format) format = DOC_MIME_TO_FORMAT[(att.mediaType || '').toLowerCase()] || '';
+  if (!format || !DOC_FORMATS.has(format)) {
+    console.warn(`[attach] unsupported document "${att.mediaType}"/"${att.name}", skipping`);
+    return null;
+  }
+  return {document: {name: safeDocName(att.name), format, source: {bytes}}};
+}
+
+// Append an attachment's content block to the most recent user turn so the
+// model sees the file alongside the current prompt.
+function appendAttachment(turns: {role: string; content: any[]}[], attachment?: ChatAttachment): void {
+  if (!attachment) return;
+  let block: any | null = null;
+  try {
+    block = attachmentToBlock(attachment);
+  } catch (err: any) {
+    console.warn('[attach] could not build content block, skipping:', err?.message);
+    return;
+  }
+  if (!block) return;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i].role === 'user') {
+      turns[i].content.push(block);
+      return;
+    }
+  }
+}
+
+// Convert our flat {role, content} list (which may start with a `system`
+// message) into the shape the Converse API expects: a separate `system` block
+// plus user/assistant turns whose content is an array of content blocks.
+function toConverse(messages: ChatMsg[]) {
+  const system: {text: string}[] = [];
+  const turns: {role: 'user' | 'assistant'; content: any[]}[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') {
+      system.push({text: m.content});
+    } else {
+      turns.push({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: [{text: m.content}],
+      });
+    }
+  }
+  return {system, turns};
+}
+
+// Non-streaming chat completion via the Bedrock Converse API.
+async function chatComplete(messages: ChatMsg[], attachment?: ChatAttachment): Promise<string> {
+  const {system, turns} = toConverse(messages);
+  appendAttachment(turns, attachment);
+  const out = await bedrock.send(
+    new ConverseCommand({
+      modelId: CHAT_MODEL,
+      system: system.length ? system : undefined,
+      messages: turns as any,
+      inferenceConfig: {maxTokens: 512},
+    }),
+  );
+  return (out.output?.message?.content ?? [])
+    .map((b: any) => b.text ?? '')
+    .join('');
 }
 
 // Detect if text contains Chinese characters
@@ -84,7 +228,7 @@ async function generateImage(prompt: string): Promise<string | null> {
 // Chat completions
 app.post('/api/chat', async (req, res) => {
   try {
-    const {messages} = req.body;
+    const {messages, attachment} = req.body;
 
     // Detect language from the latest user message
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === 'user');
@@ -98,14 +242,17 @@ app.post('/api/chat', async (req, res) => {
     const wantsImage = isImageRequest(userText);
 
     const [replyText, imageUrl] = await Promise.all([
-      ollamaChat([
-        {
-          role: 'system',
-          content:
-            `You are ${AVATAR_NAME}, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${wantsImage ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.' : ''} ${languageInstruction}`,
-        },
-        ...messages,
-      ]),
+      chatComplete(
+        [
+          {
+            role: 'system',
+            content:
+              `You are ${AVATAR_NAME}, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${wantsImage ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.' : ''} ${languageInstruction}`,
+          },
+          ...messages,
+        ],
+        attachment,
+      ),
       wantsImage ? generateImage(userText) : Promise.resolve(null),
     ]);
 
@@ -146,7 +293,7 @@ app.post('/api/chat-stream', async (req, res) => {
   });
 
   try {
-    const {messages} = req.body;
+    const {messages, attachment} = req.body;
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === 'user');
     const userText = lastUserMsg?.content || '';
     const isChinese = hasChinese(userText);
@@ -159,60 +306,35 @@ app.post('/api/chat-stream', async (req, res) => {
       ? generateImage(userText)
       : Promise.resolve(null);
 
-    const upstreamRes = await fetch(`${TTYPROXY_BASE_URL}/api/chat`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        model: CHAT_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: `You are ${AVATAR_NAME}, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${
-              wantsImage
-                ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.'
-                : ''
-            } ${languageInstruction}`,
-          },
-          ...messages,
-        ],
-        stream: true,
+    const {system, turns} = toConverse([
+      {
+        role: 'system',
+        content: `You are ${AVATAR_NAME}, a friendly, witty AI avatar assistant. Keep your responses concise — 1 to 3 sentences maximum, since your words will be spoken aloud. Be conversational and natural.${
+          wantsImage
+            ? ' The user is asking for an image; one is being generated for them, so briefly acknowledge it (e.g. "Here you go!") in your reply.'
+            : ''
+        } ${languageInstruction}`,
+      },
+      ...messages,
+    ]);
+    appendAttachment(turns, attachment);
+
+    const upstreamRes = await bedrock.send(
+      new ConverseStreamCommand({
+        modelId: CHAT_MODEL,
+        system: system.length ? system : undefined,
+        messages: turns as any,
+        inferenceConfig: {maxTokens: 512},
       }),
-      signal: upstream.signal,
-    });
+      {abortSignal: upstream.signal},
+    );
 
-    if (!upstreamRes.ok || !upstreamRes.body) {
-      throw new Error(`ttyproxy ${upstreamRes.status}`);
-    }
-
-    const reader = upstreamRes.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
     let full = '';
-    let upstreamDone = false;
-
-    while (!upstreamDone) {
-      const {value, done} = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, {stream: true});
-      const lines = buf.split('\n');
-      buf = lines.pop() || '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const obj = JSON.parse(trimmed);
-          const delta: string = obj?.message?.content || '';
-          if (delta) {
-            full += delta;
-            send('delta', {text: delta});
-          }
-          if (obj?.done) {
-            upstreamDone = true;
-            break;
-          }
-        } catch {
-          // ignore partial / non-JSON lines
-        }
+    for await (const event of upstreamRes.stream ?? []) {
+      const delta = event.contentBlockDelta?.delta?.text || '';
+      if (delta) {
+        full += delta;
+        send('delta', {text: delta});
       }
     }
 
@@ -239,9 +361,9 @@ app.post('/api/chat-stream', async (req, res) => {
 });
 
 // Vision: send a webcam frame to a vision-capable model and ask it to describe.
-// Routed through OpenAI (gpt-4o-mini) by default since OpenClaw's chat
-// gateway doesn't accept OpenAI multimodal image_url content.
-const visionClient = process.env.VISION_USE_OPENCLAW === '1' ? chatClient : openai;
+// Routed through OpenAI (gpt-4o-mini) — the chat brain runs on Bedrock's Converse
+// API, which uses a different multimodal content shape than OpenAI image_url.
+const visionClient = openai;
 const VISION_MODEL = process.env.VISION_MODEL || 'gpt-4o-mini';
 
 app.post('/api/vision', async (req, res) => {
@@ -394,7 +516,7 @@ app.post('/api/translate', async (req, res) => {
       : (isChinese ? 'en' : 'zh');
     const targetName = target === 'zh' ? 'Simplified Chinese' : 'English';
 
-    const reply = await ollamaChat([
+    const reply = await chatComplete([
       {
         role: 'system',
         content:
@@ -433,7 +555,7 @@ app.post('/api/guess-music', async (req, res) => {
       ? `Someone just played me a snippet of music. The lyrics I caught were: "${lyrics}". Guess what song this is. Be playful — if you recognize it confidently, name it; if you're unsure, say "I think it might be..." and offer your best guess. Keep it to 1-3 sentences. Your reply will be spoken aloud.`
       : `Someone played me a snippet of music but I couldn't catch any lyrics — it's probably instrumental or muddy. Playfully admit you can't quite catch the song and guess the genre/mood instead. Keep it to 1-3 sentences. Your reply will be spoken aloud.`;
 
-    const reply = await ollamaChat([
+    const reply = await chatComplete([
       {
         role: 'system',
         content:
