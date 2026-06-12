@@ -170,7 +170,7 @@ Vite proxy: `/api/*` → `http://localhost:3001` (configured in `vite.config.ts`
 
 ## 9. References
 
-- Repository: `kenken64/remotion-3d-AI-avatar`
+- Repository: `Jimmy/remotion-3d-AI-avatar`
 - Key source files:
   - `server/index.ts` — backend & OpenAI calls
   - `src/Avatar3D.tsx` — 3D character

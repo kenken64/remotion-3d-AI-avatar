@@ -33,7 +33,7 @@ const chatClient = new OpenAI({
 });
 const TTYPROXY_BASE_URL = process.env.TTYPROXY_BASE_URL || 'http://127.0.0.1:11435';
 const CHAT_MODEL = process.env.CHAT_MODEL || 'claude-code:latest';
-const AVATAR_NAME = process.env.VITE_AVATAR_NAME || 'kenken64';
+const AVATAR_NAME = process.env.VITE_AVATAR_NAME || 'Jimmy';
 
 type ChatMsg = {role: string; content: string};
 
@@ -411,8 +411,8 @@ app.post('/api/translate', async (req, res) => {
 });
 
 // "Guess this music" — record ~10s, transcribe lyrics with Whisper, ask
-// kenken64 to guess the song. Honest fail mode: instrumental tracks return no
-// lyrics and kenken64 guesses the genre/mood instead.
+// Jimmy to guess the song. Honest fail mode: instrumental tracks return no
+// lyrics and Jimmy guesses the genre/mood instead.
 app.post('/api/guess-music', async (req, res) => {
   try {
     const {audio} = req.body;

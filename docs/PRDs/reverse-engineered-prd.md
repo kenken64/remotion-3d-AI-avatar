@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Product | kenken64 AI Avatar |
+| Product | Jimmy AI Avatar |
 | Source of Truth | Current implementation in this repository |
 | Document Type | Reverse-engineered product requirements |
 | Last Updated | 2026-05-01 |
@@ -10,7 +10,7 @@
 
 ## 1. Product Summary
 
-kenken64 AI Avatar is a browser-based conversational avatar experience that combines a real-time 3D character, chat, speech synthesis, speech transcription, wake-word interaction, webcam-assisted vision prompts, a freehand drawing pad with vision-based interpretation, microphone-based song identification, on-demand bilingual translation, and an offline Remotion rendering path. The implemented product is positioned as a self-hostable demo or starter app for interactive AI avatar experiences rather than a multi-tenant production platform.
+Jimmy AI Avatar is a browser-based conversational avatar experience that combines a real-time 3D character, chat, speech synthesis, speech transcription, wake-word interaction, webcam-assisted vision prompts, a freehand drawing pad with vision-based interpretation, microphone-based song identification, on-demand bilingual translation, and an offline Remotion rendering path. The implemented product is positioned as a self-hostable demo or starter app for interactive AI avatar experiences rather than a multi-tenant production platform.
 
 The core user promise is simple: a user can talk, type, sketch, or play music to an on-screen avatar and receive short spoken responses with synchronized facial animation, subtitles, and optional visual outputs such as generated images.
 
@@ -39,7 +39,7 @@ The product addresses the gap between plain text chatbots and richer avatar inte
 
 ## 4. Core Product Pillars
 
-- Conversational avatar: the main experience centers on short-form back-and-forth dialogue with a named assistant persona, kenken64.
+- Conversational avatar: the main experience centers on short-form back-and-forth dialogue with a named assistant persona, Jimmy.
 - Voice-first interaction: the app supports direct recording, hold-to-talk behavior, and wake-word-triggered interaction.
 - Multimodal assistance: the app can describe webcam imagery, interpret freehand sketches, identify recorded music, translate any chat bubble between English and Mandarin, and return generated images when a request looks like an image-generation prompt.
 - Presentable visual experience: the product emphasizes a polished avatar scene with idle motion, a configurable gesture library, blink, and lip-sync; subtitles; status overlays; and chat history with markdown rendering.
@@ -67,7 +67,7 @@ The user enables the webcam and either presses an on-preview shutter button or u
 
 The user asks for an image in English or Chinese using supported request patterns. The system generates the image, returns a short spoken acknowledgement, and shows the image in the chat thread.
 
-### Scenario 6: Drawing Pad / "Show kenken64"
+### Scenario 6: Drawing Pad / "Show Jimmy"
 
 The user opens the drawing pad, sketches with selectable colors and an eraser, and submits the canvas. The avatar receives the sketch via the vision endpoint in a sketch-styled prompt mode and replies with a short, playful guess about what was drawn.
 
@@ -132,7 +132,7 @@ The builder opens Remotion Studio or renders a composition to MP4 using the repo
 ### 6.4 Wake-Word Behavior
 
 - The user must be able to enable and disable wake-word mode.
-- Wake-word mode must listen for phrases equivalent to "hey kenken," accepting common speech-recognition mishearings of the name (ken, kenn, kenny, kent, kenken, kenken64). The trigger drops the trailing digits because speech recognition cannot reliably transcribe them.
+- Wake-word mode must listen for phrases equivalent to "hey kenken," accepting common speech-recognition mishearings of the name (ken, kenn, kenny, kent, kenken, Jimmy). The trigger drops the trailing digits because speech recognition cannot reliably transcribe them.
 - Wake-word mode must ignore triggers while the avatar is busy recording, transcribing, thinking, or speaking.
 - Wake-word mode must restart automatically after each recognition session where browser support permits.
 
@@ -149,7 +149,7 @@ The builder opens Remotion Studio or renders a composition to MP4 using the repo
 
 - The user must be able to enable and disable a drawing pad overlay from the floating scene-controls pill.
 - The pad must support pointer drawing, color swatch selection, an eraser, and a clear action.
-- The pad must expose a "Show kenken64" submit action that sends the rendered canvas to the vision endpoint with a sketch-style prompt mode.
+- The pad must expose a "Show Jimmy" submit action that sends the rendered canvas to the vision endpoint with a sketch-style prompt mode.
 - The avatar must respond with a short, playful guess about the drawing.
 
 ### 6.7 Music Identification
@@ -229,7 +229,7 @@ Webcam, drawing pad, and music-listen toggles are surfaced separately as a float
 
 ### Conversation UI
 
-- Avatar messages must identify the kenken64 speaker.
+- Avatar messages must identify the Jimmy speaker.
 - User messages must display generated or captured images when present.
 - Avatar message text must render as markdown when markdown markers are detected.
 - The UI must show typing-style feedback while awaiting an avatar response.

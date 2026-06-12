@@ -8,7 +8,7 @@ import type {MouthShape} from '../lipSync';
 
 const MOBILE_BREAKPOINT = 768;
 
-const AVATAR_NAME = (import.meta.env?.VITE_AVATAR_NAME as string | undefined) || 'kenken64';
+const AVATAR_NAME = (import.meta.env?.VITE_AVATAR_NAME as string | undefined) || 'Jimmy';
 // Wake-word: accept the configured name plus common phonetic mishearings of
 // "kenken". Speech recognition rarely transcribes trailing digits reliably,
 // so we strip them when adding the configured name to the regex.
@@ -652,7 +652,7 @@ const toggleFullscreen = useCallback(() => {
     }
   }, [drawingHasInk, isThinking, isSpeaking, isRecording, isTranscribing, speak]);
 
-  // "Guess this music" — record up to 12s, transcribe + ask kenken64 to guess.
+  // "Guess this music" — record up to 12s, transcribe + ask Jimmy to guess.
   // Click once to start, click again to stop early.
   const toggleMusicListen = useCallback(async () => {
     if (isListeningMusic) {
@@ -849,7 +849,7 @@ const toggleFullscreen = useCallback(() => {
           // webcam off — ignore so listener keeps running
         }
         // Talk wake phrase — accept common phonetic mishearings of "kenken".
-        const wakeRe = new RegExp(`\\b(hey|hi|ok)\\s+(ken|kenn|kenny|kent|kenken|kenken64|${AVATAR_WAKE_TOKEN})\\b`);
+        const wakeRe = new RegExp(`\\b(hey|hi|ok)\\s+(ken|kenn|kenny|kent|kenken|Jimmy|${AVATAR_WAKE_TOKEN})\\b`);
         if (wakeRe.test(transcript)) {
           triggered = true; // session-local; reset on next onstart
           toggleRecordingRef.current();
@@ -1213,8 +1213,8 @@ const toggleFullscreen = useCallback(() => {
           )}
 
           {/* Drawing pad — sketch canvas + tools, positioned below webcam panel
-              (or in webcam's slot if webcam is off). User draws → 'Show kenken64'
-              sends the canvas to /api/vision (mode: sketch) and kenken64 reacts. */}
+              (or in webcam's slot if webcam is off). User draws → 'Show Jimmy'
+              sends the canvas to /api/vision (mode: sketch) and Jimmy reacts. */}
           {drawingEnabled && (() => {
             const gap = isMobile ? 12 : 16;
             const panelWidth = isMobile ? 168 : 280;

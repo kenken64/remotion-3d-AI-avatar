@@ -44,7 +44,7 @@ A browser-based AI avatar built with React, Vite, React Three Fiber, and Remotio
 ### Installation
 
 ```bash
-git clone https://github.com/kenken64/remotion-3d-AI-avatar.git
+git clone https://github.com/Jimmy/remotion-3d-AI-avatar.git
 cd remotion-3d-AI-avatar
 npm install
 ```

@@ -4,7 +4,7 @@ import {Environment, PerspectiveCamera, Stars, Stats, useGLTF, useTexture, Html,
 import * as THREE from 'three';
 import type {MouthShape} from './lipSync';
 
-const AVATAR_NAME = (import.meta.env?.VITE_AVATAR_NAME as string | undefined) || 'kenken64';
+const AVATAR_NAME = (import.meta.env?.VITE_AVATAR_NAME as string | undefined) || 'Jimmy';
 
 // Inlined version of three/examples/jsm/utils/SkeletonUtils.clone(). Uses our
 // deduped `three` instance — importing from the examples path pulls in a 2nd

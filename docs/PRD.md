@@ -6,7 +6,7 @@
 | Document Version | 1.0 |
 | Status | Draft |
 | Last Updated | 2026-04-08 |
-| Owner | kenken64 |
+| Owner | Jimmy |
 
 ---
 
@@ -172,6 +172,6 @@ For the architecture diagram, runtime topology, tech stack, module breakdown, da
 ## 12. References
 
 - Companion doc: [TECHNICAL.md](./TECHNICAL.md) — architecture, stack, modules, data flows
-- Repository: `kenken64/remotion-3d-AI-avatar`
+- Repository: `Jimmy/remotion-3d-AI-avatar`
 - External APIs: OpenAI Chat Completions, OpenAI Audio (TTS + Whisper)
 - Render framework: Remotion 4
